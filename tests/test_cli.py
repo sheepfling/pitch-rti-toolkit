@@ -143,6 +143,34 @@ def test_setup_passes_silent_mode_to_the_installer(monkeypatch, tmp_path, capsys
     assert "Pitch setup finished." in captured.out
 
 
+def test_setup_uses_linux_installers_when_running_on_linux(monkeypatch, tmp_path, capsys) -> None:
+    source_root = tmp_path / "pitch-download"
+    nested_root = source_root / "bundle"
+    nested_root.mkdir(parents=True)
+    (nested_root / "HlaStarterKit_v1.0.2_linux64.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    (nested_root / "PitchVisualOMTFree_v2.7.0_linux64.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", str(tmp_path / "staged"))
+    monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Linux")
+
+    calls: list[tuple[str, bool]] = []
+
+    def _fake_run_installer(installer_path, cwd=None, quiet=False):
+        calls.append((installer_path.name, quiet))
+
+    monkeypatch.setattr(pitch_cli, "run_installer", _fake_run_installer)
+    monkeypatch.setattr(pitch_cli, "_mark_component_installed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pitch_cli, "_installed_components", lambda: set())
+
+    assert main(["setup", "--source", str(source_root), "--silent-install"]) == 0
+    captured = capsys.readouterr()
+    assert "Silent install mode enabled" in captured.out
+    assert calls == [
+        ("HlaStarterKit_v1.0.2_linux64.sh", True),
+        ("PitchVisualOMTFree_v2.7.0_linux64.sh", True),
+    ]
+    assert "Pitch setup finished." in captured.out
+
+
 def test_download_submit_dry_run_uses_download_contact(monkeypatch, capsys) -> None:
     monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", r"C:\tmp\pitch-installers")
     assert main(["download", "submit", "--email", "you@example.com", "--dry-run"]) == 0

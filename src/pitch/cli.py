@@ -79,6 +79,8 @@ ASSET_IMPORTABLE_FILENAMES = (
     "release_notes.txt",
     "HlaStarterKit_v1.0.2_windows64.exe",
     "PitchVisualOMTFree_v2.7.0_windows64.exe",
+    "HlaStarterKit_v1.0.2_linux64.sh",
+    "PitchVisualOMTFree_v2.7.0_linux64.sh",
     "prti1516e-free_5_5_10_windows64.exe",
     "prti1516e-free_5_5_10_windows32.exe",
     "prti1516e-free_5_5_10_linux32.sh",

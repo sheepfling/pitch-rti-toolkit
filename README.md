@@ -156,6 +156,8 @@ If the vendor installers support unattended mode on your machine, try:
 pitch setup --silent-install
 ```
 
+On Linux and WSL, the same setup flow uses the `.sh` installers from `pitch/linux/` and the Linux launcher discovery path.
+
 ## Verification
 
 `verify` confirms the bundle is complete before you install anything:

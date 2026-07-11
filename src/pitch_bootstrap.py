@@ -513,7 +513,7 @@ def discover_linux_install_locations(component_roots: Mapping[str, Sequence[Path
             if hits:
                 break
         if hits:
-                discovered[component] = hits
+            discovered[component] = hits
     return discovered
 
 
