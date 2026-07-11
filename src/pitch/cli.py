@@ -28,6 +28,8 @@ from pitch_bootstrap import (
     parse_ports_config,
     probe_targets,
     resolve_asset_root,
+    resolve_installer_drop_root,
+    resolve_user_data_root,
     run_installer,
     save_install_state,
     verify_manifest,
@@ -36,6 +38,8 @@ from pitch_bootstrap import (
 
 
 ASSET_ROOT = resolve_asset_root(ROOT)
+USER_DATA_ROOT = resolve_user_data_root()
+INSTALLER_DROP_ROOT = resolve_installer_drop_root()
 DOWNLOAD_CONTACT_FILENAME = ".pitch-download-contact.json"
 DOWNLOAD_CONTACT_TEMPLATE = ASSET_ROOT / "download-contact.example.json"
 DOWNLOAD_SCRIPT_PATH = ASSET_ROOT / "download-autofill.js"
@@ -90,6 +94,7 @@ SETUP_REQUIRED_PATHS = COMMON_REQUIRED_PATHS
 VERIFY_REQUIRED_PATHS = COMMON_REQUIRED_PATHS
 
 INSTALLER_SEARCH_ROOTS = (
+    INSTALLER_DROP_ROOT,
     ASSET_ROOT,
     ASSET_ROOT / "windows",
     ASSET_ROOT / "linux",
@@ -243,6 +248,9 @@ def build_parser() -> argparse.ArgumentParser:
     config_init_parser = config_subparsers.add_parser("init", help="Generate .pitch-install-roots.json from detected installs.")
     config_init_parser.add_argument("--force", action="store_true", help="Overwrite an existing install roots config.")
     config_init_parser.set_defaults(handler=handle_config_init)
+
+    config_assets_parser = config_subparsers.add_parser("assets", help="Show the writable asset and installer drop locations.")
+    config_assets_parser.set_defaults(handler=handle_config_assets)
 
     download_parser = subparsers.add_parser("download", help="Prepare Pitch free-download autofill helpers.")
     download_subparsers = download_parser.add_subparsers(dest="download_command")
@@ -825,6 +833,7 @@ def handle_probe(args: argparse.Namespace) -> int:
 def handle_doctor(args: argparse.Namespace) -> int:
     _print_python_workflow()
     print("Detected install roots:")
+    print(f"Writable asset root: {INSTALLER_DROP_ROOT}")
 
     configured_roots = _configured_install_roots()
     if configured_roots:
@@ -978,6 +987,16 @@ def handle_config_init(args: argparse.Namespace) -> int:
     print(f"Wrote {config_path.name}:")
     for key, value in sorted(detected_roots.items()):
         print(f"  {key} -> {value}")
+    return 0
+
+
+def handle_config_assets(args: argparse.Namespace) -> int:
+    print("Writable asset locations:")
+    print(f"  user data root: {USER_DATA_ROOT}")
+    print(f"  installer drop root: {INSTALLER_DROP_ROOT}")
+    print("Bundle locations:")
+    print(f"  asset root: {ASSET_ROOT}")
+    print(f"  download contact file: {_download_contact_path()}")
     return 0
 
 

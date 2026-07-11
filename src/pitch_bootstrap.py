@@ -38,6 +38,7 @@ def discover_workspace_root() -> Path:
 ROOT = discover_workspace_root()
 INSTALL_STATE_FILENAME = ".pitch-install-state.json"
 INSTALL_ROOTS_FILENAME = ".pitch-install-roots.json"
+APP_NAME = "pitch-rti-toolkit"
 
 
 def resolve_asset_root(workspace_root: Path | None = None) -> Path:
@@ -59,6 +60,34 @@ def resolve_asset_root(workspace_root: Path | None = None) -> Path:
             return candidate
 
     return workspace_root / "pitch" if workspace_root is not None else Path.cwd() / "pitch"
+
+
+def resolve_user_data_root(app_name: str = APP_NAME) -> Path:
+    override = os.environ.get("PITCH_USER_DATA_ROOT")
+    if override:
+        return Path(override).expanduser()
+
+    system = os.name
+    if system == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if base:
+            return Path(base).expanduser() / app_name
+        return Path.home() / "AppData" / "Local" / app_name
+
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / app_name
+
+    base = os.environ.get("XDG_DATA_HOME")
+    if base:
+        return Path(base).expanduser() / app_name
+    return Path.home() / ".local" / "share" / app_name
+
+
+def resolve_installer_drop_root(app_name: str = APP_NAME) -> Path:
+    override = os.environ.get("PITCH_INSTALLER_DROP_ROOT")
+    if override:
+        return Path(override).expanduser()
+    return resolve_user_data_root(app_name) / "installers"
 
 
 @dataclass(frozen=True)

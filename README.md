@@ -48,6 +48,26 @@ To inspect the detected roots or the override file:
 pitch config show
 ```
 
+## Writable Asset Location
+
+The checked-in `pitch/` folder is the bundle namespace for docs, manifests, and checked-in helper files.
+Installer binaries should live outside the repo or wheel in a user-writable asset directory.
+
+By default, Pitch uses:
+
+- Windows: `%LOCALAPPDATA%\pitch-rti-toolkit\installers`
+- Linux: `~/.local/share/pitch-rti-toolkit/installers`
+- macOS: `~/Library/Application Support/pitch-rti-toolkit/installers`
+
+You can override that root with `PITCH_USER_DATA_ROOT`.
+If you only want to change the installer folder, set `PITCH_INSTALLER_DROP_ROOT` instead.
+
+To print the resolved paths:
+
+```bash
+pitch config assets
+```
+
 ## Pitch Free-Download Form
 
 Pitch’s free-download page still expects a contact form to be filled out before the bundle is sent.
