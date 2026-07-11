@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pitch.cli as pitch_cli
 from pitch.cli import main
-from pitch_bootstrap import resolve_installer_drop_root, resolve_user_data_root
+from pitch_bootstrap import ensure_installer_drop_root, resolve_installer_drop_root, resolve_user_data_root
 
 
 def test_verify_passes_for_source_lite_bundle() -> None:
@@ -36,6 +36,31 @@ def test_user_data_root_can_be_overridden(monkeypatch) -> None:
 def test_installer_drop_root_can_be_overridden_directly(monkeypatch) -> None:
     monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", r"C:\tmp\pitch-installers")
     assert resolve_installer_drop_root() == Path(r"C:\tmp\pitch-installers")
+
+
+def test_assets_init_creates_the_drop_root(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", str(tmp_path / "installers"))
+    assert ensure_installer_drop_root().exists()
+    assert main(["assets", "init"]) == 0
+    assert (tmp_path / "installers").exists()
+
+
+def test_assets_show_reports_the_drop_root(monkeypatch, capsys, tmp_path) -> None:
+    monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", str(tmp_path / "installers"))
+    assert main(["assets", "show"]) == 0
+    captured = capsys.readouterr()
+    assert "Installer drop root:" in captured.out
+
+
+def test_assets_init_reports_permission_failures(monkeypatch, capsys) -> None:
+    def _raise_permission_error() -> Path:
+        raise PermissionError("blocked")
+
+    monkeypatch.setattr(pitch_cli, "ensure_installer_drop_root", _raise_permission_error)
+
+    assert main(["assets", "init"]) == 1
+    captured = capsys.readouterr()
+    assert "Could not create installer drop root:" in captured.err
 
 
 def test_setup_reports_the_installer_drop_root(capsys) -> None:

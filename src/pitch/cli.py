@@ -28,6 +28,7 @@ from pitch_bootstrap import (
     parse_ports_config,
     probe_targets,
     resolve_asset_root,
+    ensure_installer_drop_root,
     resolve_installer_drop_root,
     resolve_user_data_root,
     run_installer,
@@ -251,6 +252,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     config_assets_parser = config_subparsers.add_parser("assets", help="Show the writable asset and installer drop locations.")
     config_assets_parser.set_defaults(handler=handle_config_assets)
+
+    assets_parser = subparsers.add_parser("assets", help="Manage the writable installer drop folder.")
+    assets_subparsers = assets_parser.add_subparsers(dest="assets_command")
+    assets_parser.set_defaults(handler=handle_assets, parser=assets_parser)
+
+    assets_show_parser = assets_subparsers.add_parser("show", help="Show the writable installer drop folder.")
+    assets_show_parser.set_defaults(handler=handle_assets_show)
+
+    assets_init_parser = assets_subparsers.add_parser("init", help="Create the writable installer drop folder.")
+    assets_init_parser.set_defaults(handler=handle_assets_init)
+
+    assets_open_parser = assets_subparsers.add_parser("open", help="Open the writable installer drop folder.")
+    assets_open_parser.set_defaults(handler=handle_assets_open)
 
     download_parser = subparsers.add_parser("download", help="Prepare Pitch free-download autofill helpers.")
     download_subparsers = download_parser.add_subparsers(dest="download_command")
@@ -1006,6 +1020,43 @@ def handle_config_assets(args: argparse.Namespace) -> int:
     print("Bundle locations:")
     print(f"  asset root: {ASSET_ROOT}")
     print(f"  download contact file: {_download_contact_path()}")
+    return 0
+
+
+def handle_assets(args: argparse.Namespace) -> int:
+    parser = getattr(args, "parser", None)
+    if parser is not None:
+        parser.print_help()
+    else:
+        print("Usage: pitch assets init")
+    return 0
+
+
+def _print_installer_drop_root() -> None:
+    print(f"Installer drop root: {INSTALLER_DROP_ROOT}")
+
+
+def handle_assets_show(args: argparse.Namespace) -> int:
+    _print_installer_drop_root()
+    return 0
+
+
+def handle_assets_init(args: argparse.Namespace) -> int:
+    try:
+        path = ensure_installer_drop_root()
+    except OSError as exc:
+        print(f"Could not create installer drop root: {INSTALLER_DROP_ROOT}", file=sys.stderr)
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    print(f"Created installer drop root: {path}")
+    return 0
+
+
+def handle_assets_open(args: argparse.Namespace) -> int:
+    path = ensure_installer_drop_root()
+    _open_path(path)
+    print(f"Opened installer drop root: {path}")
     return 0
 
 

@@ -90,6 +90,12 @@ def resolve_installer_drop_root(app_name: str = APP_NAME) -> Path:
     return resolve_user_data_root(app_name) / "installers"
 
 
+def ensure_installer_drop_root(app_name: str = APP_NAME) -> Path:
+    path = resolve_installer_drop_root(app_name)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 @dataclass(frozen=True)
 class PortTarget:
     host: str
