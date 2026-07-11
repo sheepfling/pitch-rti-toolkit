@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pitch"
+version = "0.1.0"
+description = "Pitch HLA starter bundle CLI"
+requires-python = ">=3.10"
+
+[project.scripts]
+pitch = "pitch.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["pitch_bootstrap"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
