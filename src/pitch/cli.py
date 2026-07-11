@@ -527,8 +527,15 @@ def _write_json_file(path: Path, data: dict[str, object]) -> None:
 def _open_path(path: Path) -> None:
     system = platform.system()
     if system == "Windows":
-        os.startfile(str(path))  # type: ignore[attr-defined]
-        return
+        try:
+            os.startfile(str(path))  # type: ignore[attr-defined]
+            return
+        except (OSError, PermissionError):
+            try:
+                subprocess.Popen(["explorer.exe", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return
+            except OSError as exc:
+                raise RuntimeError(f"Could not open path: {path}") from exc
 
     opener: list[str] | None = None
     if system == "Darwin":
@@ -626,13 +633,15 @@ def _resolve_installer_path(spec: InstallSpec) -> Path | None:
 
 def _print_missing_installers(specs: list[InstallSpec]) -> None:
     print("Could not find the Pitch installer files needed for setup.")
+    print(f"Installer drop root: {INSTALLER_DROP_ROOT}")
+    print("Set PITCH_INSTALLER_DROP_ROOT to override the installer folder directly.")
     print("Search locations included:")
     for root in _installer_search_roots():
         print(f"  - {root}")
     print("Expected installer filenames:")
     for spec in specs:
         print(f"  - {spec.path.name}")
-    print("Place the installers in pitch/, Downloads/, or a cache folder, then rerun `pitch setup`.")
+    print("Place the installers in the drop root above, or in pitch/, Downloads/, or a cache folder, then rerun `pitch setup`.")
 
 
 def _discover_installed_runtime_launcher(component_key: str) -> Path | None:
