@@ -79,6 +79,23 @@ def test_assets_import_stages_recognized_files(monkeypatch, tmp_path) -> None:
     assert (staged_root / "prti1516e-free_5_5_10_windows64.exe").exists()
 
 
+def test_setup_can_stage_from_a_source_folder(monkeypatch, tmp_path, capsys) -> None:
+    source_root = tmp_path / "pitch-download"
+    nested_root = source_root / "bundle"
+    nested_root.mkdir(parents=True)
+    (nested_root / "HlaStarterKit_v1.0.2_windows64.exe").write_text("hla", encoding="utf-8")
+    (nested_root / "PitchVisualOMTFree_v2.7.0_windows64.exe").write_text("vomt", encoding="utf-8")
+    monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", str(tmp_path / "staged"))
+    monkeypatch.setattr(pitch_cli, "run_installer", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pitch_cli, "_mark_component_installed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pitch_cli, "_installed_components", lambda: set())
+
+    assert main(["setup", "--source", str(source_root)]) == 0
+    captured = capsys.readouterr()
+    assert "Staged 2 file(s)" in captured.out
+    assert "Pitch setup finished." in captured.out
+
+
 def test_download_submit_dry_run_uses_download_contact(monkeypatch, capsys) -> None:
     monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", r"C:\tmp\pitch-installers")
     assert main(["download", "submit", "--email", "you@example.com", "--dry-run"]) == 0

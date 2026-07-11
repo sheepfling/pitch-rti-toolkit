@@ -119,7 +119,6 @@ SETUP_REQUIRED_PATHS = COMMON_REQUIRED_PATHS
 VERIFY_REQUIRED_PATHS = COMMON_REQUIRED_PATHS
 
 INSTALLER_SEARCH_ROOTS = (
-    INSTALLER_DROP_ROOT,
     ASSET_ROOT,
     ASSET_ROOT / "windows",
     ASSET_ROOT / "linux",
@@ -244,6 +243,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--strict-probe", action="store_true", help="Fail if any configured ports are closed.")
     setup_parser.add_argument("--force", action="store_true", help="Rerun installers even if the bundle appears installed.")
     setup_parser.add_argument("--ports-config", default=str(ASSET_ROOT / "ports.conf"), help="Port probe configuration file.")
+    setup_parser.add_argument("--source", help="Folder to scan and stage into the writable installer cache before setup.")
     setup_parser.set_defaults(handler=handle_setup)
 
     verify_parser = subparsers.add_parser("verify", help="Verify the bundle and checksum manifest.")
@@ -637,6 +637,9 @@ def _normalize_install_roots(paths: list[Path]) -> list[Path]:
 
 def _installer_search_roots() -> list[Path]:
     roots: list[Path] = []
+    drop_root = resolve_installer_drop_root()
+    if drop_root.exists():
+        roots.append(drop_root)
     for path in INSTALLER_SEARCH_ROOTS:
         if path.exists() and path not in roots:
             roots.append(path)
@@ -687,8 +690,9 @@ def _resolve_installer_path(spec: InstallSpec) -> Path | None:
 
 
 def _print_missing_installers(specs: list[InstallSpec]) -> None:
+    drop_root = resolve_installer_drop_root()
     print("Could not find the Pitch installer files needed for setup.")
-    print(f"Installer drop root: {INSTALLER_DROP_ROOT}")
+    print(f"Installer drop root: {drop_root}")
     print("Set PITCH_INSTALLER_DROP_ROOT to override the installer folder directly.")
     print("Search locations included:")
     for root in _installer_search_roots():
@@ -804,6 +808,8 @@ def _run_start_action(action: StartAction, args: argparse.Namespace) -> None:
 
 
 def handle_setup(args: argparse.Namespace) -> int:
+    _stage_assets_for_setup(getattr(args, "source", None), force=args.force)
+
     failures = _verify_setup_paths()
     if failures:
         _failures_to_stderr(failures)
@@ -897,7 +903,7 @@ def handle_probe(args: argparse.Namespace) -> int:
 def handle_doctor(args: argparse.Namespace) -> int:
     _print_python_workflow()
     print("Detected install roots:")
-    print(f"Writable asset root: {INSTALLER_DROP_ROOT}")
+    print(f"Writable asset root: {resolve_installer_drop_root()}")
 
     configured_roots = _configured_install_roots()
     if configured_roots:
@@ -1057,7 +1063,7 @@ def handle_config_init(args: argparse.Namespace) -> int:
 def handle_config_assets(args: argparse.Namespace) -> int:
     print("Writable asset locations:")
     print(f"  user data root: {USER_DATA_ROOT}")
-    print(f"  installer drop root: {INSTALLER_DROP_ROOT}")
+    print(f"  installer drop root: {resolve_installer_drop_root()}")
     print("Bundle locations:")
     print(f"  asset root: {ASSET_ROOT}")
     print(f"  download contact file: {_download_contact_path()}")
@@ -1074,7 +1080,7 @@ def handle_assets(args: argparse.Namespace) -> int:
 
 
 def _print_installer_drop_root() -> None:
-    print(f"Installer drop root: {INSTALLER_DROP_ROOT}")
+    print(f"Installer drop root: {resolve_installer_drop_root()}")
 
 
 def handle_assets_show(args: argparse.Namespace) -> int:
@@ -1086,7 +1092,7 @@ def handle_assets_init(args: argparse.Namespace) -> int:
     try:
         path = ensure_installer_drop_root()
     except OSError as exc:
-        print(f"Could not create installer drop root: {INSTALLER_DROP_ROOT}", file=sys.stderr)
+        print(f"Could not create installer drop root: {resolve_installer_drop_root()}", file=sys.stderr)
         print(str(exc), file=sys.stderr)
         return 1
 
@@ -1116,6 +1122,30 @@ def _discover_importable_assets(source_root: Path) -> list[Path]:
     return hits
 
 
+def _stage_importable_assets(source_root: Path, dest_root: Path, force: bool = False) -> tuple[list[Path], list[Path], list[Path]]:
+    discovered = _discover_importable_assets(source_root)
+    if not discovered:
+        return [], [], []
+
+    copied: list[Path] = []
+    skipped: list[Path] = []
+    conflicts: list[Path] = []
+
+    for source in discovered:
+        destination = dest_root / source.name
+        if destination.exists():
+            if sha256_file(destination) == sha256_file(source):
+                skipped.append(destination)
+                continue
+            if not force:
+                conflicts.append(destination)
+                continue
+        shutil.copy2(source, destination)
+        copied.append(destination)
+
+    return copied, skipped, conflicts
+
+
 def handle_assets_import(args: argparse.Namespace) -> int:
     source_root = Path(args.source).expanduser()
     if not source_root.exists():
@@ -1128,30 +1158,14 @@ def handle_assets_import(args: argparse.Namespace) -> int:
     try:
         dest_root = ensure_installer_drop_root()
     except OSError as exc:
-        print(f"Could not create installer drop root: {INSTALLER_DROP_ROOT}", file=sys.stderr)
+        print(f"Could not create installer drop root: {resolve_installer_drop_root()}", file=sys.stderr)
         print(str(exc), file=sys.stderr)
         return 1
 
-    discovered = _discover_importable_assets(source_root)
-    if not discovered:
+    copied, skipped, conflicts = _stage_importable_assets(source_root, dest_root, force=args.force)
+    if not copied and not skipped and not conflicts:
         print(f"No recognized Pitch files were found under: {source_root}", file=sys.stderr)
         return 1
-
-    copied: list[Path] = []
-    skipped: list[Path] = []
-    conflicts: list[Path] = []
-
-    for source in discovered:
-        destination = dest_root / source.name
-        if destination.exists():
-            if sha256_file(destination) == sha256_file(source):
-                skipped.append(destination)
-                continue
-            if not args.force:
-                conflicts.append(destination)
-                continue
-        shutil.copy2(source, destination)
-        copied.append(destination)
 
     if conflicts:
         print("Conflicting staged files already exist. Re-run with --force to overwrite:", file=sys.stderr)
@@ -1169,6 +1183,28 @@ def handle_assets_import(args: argparse.Namespace) -> int:
         for path in copied:
             print(f"  - {path}")
     return 0
+
+
+def _stage_assets_for_setup(source_root: str | None, force: bool) -> None:
+    if not source_root:
+        return
+
+    source_path = Path(source_root).expanduser()
+    if not source_path.exists():
+        raise FileNotFoundError(f"Source folder does not exist: {source_path}")
+    if not source_path.is_dir():
+        raise FileNotFoundError(f"Source path is not a folder: {source_path}")
+
+    dest_root = ensure_installer_drop_root()
+    copied, skipped, conflicts = _stage_importable_assets(source_path, dest_root, force=force)
+    if conflicts:
+        raise RuntimeError(
+            "Conflicting staged files already exist. Re-run with --force after importing the source folder."
+        )
+    if copied:
+        print(f"Staged {len(copied)} file(s) into {dest_root}")
+    if skipped:
+        print(f"Already staged {len(skipped)} file(s) in {dest_root}")
 
 
 def _download_contact_path() -> Path:

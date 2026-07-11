@@ -76,6 +76,12 @@ pitch assets import C:\\Users\\you\\Downloads\\pitch
 
 The command recursively scans the folder for known Pitch installer and support files, then copies them into the cache root so you do not need to keep the original downloads folder around.
 
+To stage a folder and run setup in one step:
+
+```bash
+python -m pitch setup --source C:\\Users\\you\\Downloads\\pitch
+```
+
 ## Pitch Free-Download Form
 
 Pitch’s free-download page still expects a contact form to be filled out before the bundle is sent.
