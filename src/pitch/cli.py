@@ -71,6 +71,20 @@ PITCH_FREE_DOWNLOAD_HEADERS = {
     "Origin": "https://www2.pitch.se",
     "Referer": PITCH_FREE_DOWNLOAD_URL,
 }
+ASSET_IMPORTABLE_FILENAMES = (
+    "Pitch Unreal Engine Connector Users Guide.pdf",
+    "TheHLAtutorial.pdf",
+    "pitch_visual_omt_users_guide.pdf",
+    "prti_users_guide.pdf",
+    "release_notes.txt",
+    "HlaStarterKit_v1.0.2_windows64.exe",
+    "PitchVisualOMTFree_v2.7.0_windows64.exe",
+    "prti1516e-free_5_5_10_windows64.exe",
+    "prti1516e-free_5_5_10_windows32.exe",
+    "prti1516e-free_5_5_10_linux32.sh",
+    "prti1516e-free_5_5_10_linux64.sh",
+    "prti1516e-free_5_5_10_mac.dmg",
+)
 
 
 @dataclass(frozen=True)
@@ -275,6 +289,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     assets_open_parser = assets_subparsers.add_parser("open", help="Open the writable installer drop folder.")
     assets_open_parser.set_defaults(handler=handle_assets_open)
+
+    assets_import_parser = assets_subparsers.add_parser("import", help="Discover recognized Pitch files in a folder and copy them into the writable cache.")
+    assets_import_parser.add_argument("source", help="Folder containing downloaded Pitch files.")
+    assets_import_parser.add_argument("--force", action="store_true", help="Overwrite existing staged files.")
+    assets_import_parser.set_defaults(handler=handle_assets_import)
 
     download_parser = subparsers.add_parser("download", help="Prepare Pitch free-download autofill helpers.")
     download_subparsers = download_parser.add_subparsers(dest="download_command")
@@ -1050,7 +1069,7 @@ def handle_assets(args: argparse.Namespace) -> int:
     if parser is not None:
         parser.print_help()
     else:
-        print("Usage: pitch assets init")
+        print("Usage: pitch assets init | pitch assets import <source-folder>")
     return 0
 
 
@@ -1079,6 +1098,76 @@ def handle_assets_open(args: argparse.Namespace) -> int:
     path = ensure_installer_drop_root()
     _open_path(path)
     print(f"Opened installer drop root: {path}")
+    return 0
+
+
+def _discover_importable_assets(source_root: Path) -> list[Path]:
+    hits: list[Path] = []
+    seen_names: set[str] = set()
+    for filename in ASSET_IMPORTABLE_FILENAMES:
+        matches = discover_file_locations(filename, [source_root], max_depth=10)
+        if not matches:
+            continue
+        selected = matches[0]
+        if selected.name in seen_names:
+            continue
+        seen_names.add(selected.name)
+        hits.append(selected)
+    return hits
+
+
+def handle_assets_import(args: argparse.Namespace) -> int:
+    source_root = Path(args.source).expanduser()
+    if not source_root.exists():
+        print(f"Source folder does not exist: {source_root}", file=sys.stderr)
+        return 1
+    if not source_root.is_dir():
+        print(f"Source path is not a folder: {source_root}", file=sys.stderr)
+        return 1
+
+    try:
+        dest_root = ensure_installer_drop_root()
+    except OSError as exc:
+        print(f"Could not create installer drop root: {INSTALLER_DROP_ROOT}", file=sys.stderr)
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    discovered = _discover_importable_assets(source_root)
+    if not discovered:
+        print(f"No recognized Pitch files were found under: {source_root}", file=sys.stderr)
+        return 1
+
+    copied: list[Path] = []
+    skipped: list[Path] = []
+    conflicts: list[Path] = []
+
+    for source in discovered:
+        destination = dest_root / source.name
+        if destination.exists():
+            if sha256_file(destination) == sha256_file(source):
+                skipped.append(destination)
+                continue
+            if not args.force:
+                conflicts.append(destination)
+                continue
+        shutil.copy2(source, destination)
+        copied.append(destination)
+
+    if conflicts:
+        print("Conflicting staged files already exist. Re-run with --force to overwrite:", file=sys.stderr)
+        for path in conflicts:
+            print(f"  - {path}", file=sys.stderr)
+        return 1
+
+    print(f"Staged {len(copied)} file(s) into {dest_root}")
+    if skipped:
+        print("Already staged:")
+        for path in skipped:
+            print(f"  - {path}")
+    if copied:
+        print("Copied:")
+        for path in copied:
+            print(f"  - {path}")
     return 0
 
 

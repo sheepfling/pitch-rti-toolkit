@@ -63,6 +63,22 @@ def test_assets_init_reports_permission_failures(monkeypatch, capsys) -> None:
     assert "Could not create installer drop root:" in captured.err
 
 
+def test_assets_import_stages_recognized_files(monkeypatch, tmp_path) -> None:
+    source_root = tmp_path / "downloads"
+    nested_root = source_root / "pitch" / "bundle"
+    nested_root.mkdir(parents=True)
+    (nested_root / "release_notes.txt").write_text("notes", encoding="utf-8")
+    (nested_root / "prti_users_guide.pdf").write_text("guide", encoding="utf-8")
+    (nested_root / "prti1516e-free_5_5_10_windows64.exe").write_text("exe", encoding="utf-8")
+    monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", str(tmp_path / "staged"))
+
+    assert main(["assets", "import", str(source_root)]) == 0
+    staged_root = tmp_path / "staged"
+    assert (staged_root / "release_notes.txt").exists()
+    assert (staged_root / "prti_users_guide.pdf").exists()
+    assert (staged_root / "prti1516e-free_5_5_10_windows64.exe").exists()
+
+
 def test_download_submit_dry_run_uses_download_contact(monkeypatch, capsys) -> None:
     monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", r"C:\tmp\pitch-installers")
     assert main(["download", "submit", "--email", "you@example.com", "--dry-run"]) == 0
