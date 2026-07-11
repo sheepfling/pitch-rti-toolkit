@@ -87,13 +87,7 @@ COMMON_REQUIRED_PATHS = [
 
 SETUP_REQUIRED_PATHS = COMMON_REQUIRED_PATHS
 
-VERIFY_REQUIRED_PATHS = COMMON_REQUIRED_PATHS + [
-    "pitch/linux/HlaStarterKit_v1.0.2_linux64.sh",
-    "pitch/linux/PitchVisualOMTFree_v2.7.0_linux64.sh",
-    "pitch/windows/HlaStarterKit_v1.0.2_windows64.exe",
-    "pitch/windows/PitchVisualOMTFree_v2.7.0_windows64.exe",
-    "pitch/windows/prti1516e-free_5_5_10_windows32.exe",
-]
+VERIFY_REQUIRED_PATHS = COMMON_REQUIRED_PATHS
 
 INSTALLER_SEARCH_ROOTS = (
     ASSET_ROOT,
