@@ -88,6 +88,7 @@ def test_download_submit_posts_request(monkeypatch) -> None:
         captured_request["url"] = request.full_url
         captured_request["body"] = request.data.decode("utf-8")
         captured_request["timeout"] = timeout
+        captured_request["headers"] = dict(request.header_items())
         return _Response()
 
     monkeypatch.setattr(pitch_cli.urllib.request, "urlopen", _fake_urlopen)
@@ -96,6 +97,8 @@ def test_download_submit_posts_request(monkeypatch) -> None:
     assert captured_request["url"].endswith("/mailformfree.asp")
     assert "email=you%40example.com" in captured_request["body"]
     assert captured_request["timeout"] == 30
+    assert "Mozilla/5.0" in captured_request["headers"]["User-agent"]
+    assert captured_request["headers"]["Referer"].endswith("/free/download.asp")
 
 
 def test_setup_reports_the_installer_drop_root(capsys) -> None:

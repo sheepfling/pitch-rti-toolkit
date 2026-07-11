@@ -64,6 +64,13 @@ DOWNLOAD_CONTACT_DEFAULTS = {
     "subscribe_newsletter": False,
 }
 PITCH_FREE_DOWNLOAD_URL = "https://www2.pitch.se/free/download.asp"
+PITCH_FREE_DOWNLOAD_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Origin": "https://www2.pitch.se",
+    "Referer": PITCH_FREE_DOWNLOAD_URL,
+}
 
 
 @dataclass(frozen=True)
@@ -1320,7 +1327,7 @@ def _download_submit_request(contact: dict[str, object]) -> urllib.request.Reque
     return urllib.request.Request(
         f"{PITCH_FREE_DOWNLOAD_URL.rsplit('/', 1)[0]}/mailformfree.asp",
         data=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={"Content-Type": "application/x-www-form-urlencoded", **PITCH_FREE_DOWNLOAD_HEADERS},
         method="POST",
     )
 
