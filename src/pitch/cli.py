@@ -122,13 +122,9 @@ INSTALLER_SEARCH_ROOTS = (
     ASSET_ROOT,
     ASSET_ROOT / "windows",
     ASSET_ROOT / "linux",
-    ROOT,
     ROOT / "downloads",
-    ROOT / ".cache",
     Path.home() / "Downloads",
     Path.home() / "downloads",
-    Path.home() / ".cache",
-    Path.home() / ".local" / "share",
 )
 
 CORE_WINDOWS_INSTALLERS = [
@@ -644,14 +640,6 @@ def _installer_search_roots() -> list[Path]:
         if path.exists() and path not in roots:
             roots.append(path)
 
-    for env_var in ("XDG_CACHE_HOME", "LOCALAPPDATA", "APPDATA", "USERPROFILE"):
-        raw = os.environ.get(env_var)
-        if not raw:
-            continue
-        path = Path(raw).expanduser()
-        if path.exists() and path not in roots:
-            roots.append(path)
-
     return roots
 
 
@@ -816,6 +804,14 @@ def handle_setup(args: argparse.Namespace) -> int:
         return 1
 
     target_specs = _install_specs_for_system(args.include_legacy_rti)
+    if platform.system() == "Windows" and not args.include_legacy_rti:
+        core_specs = list(SETUP_WINDOWS_SPECS)
+        if not any(_resolve_installer_path(spec) is not None for spec in core_specs):
+            legacy_installer = _resolve_installer_path(SETUP_WINDOWS_LEGACY_SPEC)
+            if legacy_installer is not None:
+                print("Core Windows installers were not found; falling back to the legacy pRTI package.")
+                target_specs = [SETUP_WINDOWS_LEGACY_SPEC]
+
     required_keys = {spec.key for spec in target_specs}
     installed_components = _installed_components()
     detected_components = installed_components & required_keys
@@ -854,7 +850,9 @@ def handle_setup(args: argparse.Namespace) -> int:
 
     if unresolved_specs:
         _print_missing_installers(unresolved_specs)
-        return 1
+        if not resolved_specs:
+            return 1
+        print("Continuing with the installers that were found.")
 
     for spec, installer_path in resolved_specs:
         if spec.key == "prti1516e" and platform.system() != "Windows":

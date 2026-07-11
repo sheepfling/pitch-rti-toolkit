@@ -97,6 +97,25 @@ def test_setup_can_stage_from_a_source_folder(monkeypatch, tmp_path, capsys) -> 
     assert "Pitch setup finished." in captured.out
 
 
+def test_setup_falls_back_to_legacy_rti_when_core_installers_are_missing(monkeypatch, tmp_path, capsys) -> None:
+    source_root = tmp_path / "pitch-download"
+    nested_root = source_root / "bundle"
+    nested_root.mkdir(parents=True)
+    (nested_root / "prti1516e-free_5_5_10_windows32.exe").write_text("legacy", encoding="utf-8")
+    monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", str(tmp_path / "staged"))
+
+    installed: list[tuple[str, str]] = []
+    monkeypatch.setattr(pitch_cli, "run_installer", lambda installer_path, cwd=None: installed.append((installer_path.name, str(cwd))))
+    monkeypatch.setattr(pitch_cli, "_mark_component_installed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pitch_cli, "_installed_components", lambda: set())
+
+    assert main(["setup", "--source", str(source_root)]) == 0
+    captured = capsys.readouterr()
+    assert "falling back to the legacy pRTI package" in captured.out
+    assert installed == [("prti1516e-free_5_5_10_windows32.exe", str(pitch_cli.ROOT))]
+    assert "Pitch setup finished." in captured.out
+
+
 def test_download_submit_dry_run_uses_download_contact(monkeypatch, capsys) -> None:
     monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", r"C:\tmp\pitch-installers")
     assert main(["download", "submit", "--email", "you@example.com", "--dry-run"]) == 0
@@ -135,7 +154,11 @@ def test_download_submit_posts_request(monkeypatch) -> None:
     assert captured_request["headers"]["Referer"].endswith("/free/download.asp")
 
 
-def test_setup_reports_the_installer_drop_root(capsys) -> None:
+def test_setup_reports_the_installer_drop_root(monkeypatch, tmp_path, capsys) -> None:
+    empty_search_root = tmp_path / "empty"
+    empty_search_root.mkdir()
+    monkeypatch.setattr(pitch_cli, "_installer_search_roots", lambda: [empty_search_root])
+
     assert main(["setup"]) == 1
     captured = capsys.readouterr()
     assert "Installer drop root:" in captured.out
