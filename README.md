@@ -102,6 +102,15 @@ The checked-in version lives at `pitch/download-autofill.js`.
 You can also seed the browser prompt default with `--email you@example.com`.
 After filling the form, the script asks for confirmation and then clicks the submit button if one is present.
 
+To submit the free-download request directly from Python instead of using the browser helper:
+
+```bash
+python -m pitch download submit --email you@example.com
+```
+
+That uses the same saved contact defaults and posts the request to Pitch's form endpoint.
+Add `--dry-run` if you want to inspect the payload before sending it.
+
 For a one-step install-and-probe run:
 
 ```bash

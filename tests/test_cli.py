@@ -63,6 +63,41 @@ def test_assets_init_reports_permission_failures(monkeypatch, capsys) -> None:
     assert "Could not create installer drop root:" in captured.err
 
 
+def test_download_submit_dry_run_uses_download_contact(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", r"C:\tmp\pitch-installers")
+    assert main(["download", "submit", "--email", "you@example.com", "--dry-run"]) == 0
+    captured = capsys.readouterr()
+    assert '"email": "you@example.com"' in captured.out
+    assert '"download": "prti"' in captured.out
+
+
+def test_download_submit_posts_request(monkeypatch) -> None:
+    captured_request = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b"Done."
+
+    def _fake_urlopen(request, timeout=0):
+        captured_request["url"] = request.full_url
+        captured_request["body"] = request.data.decode("utf-8")
+        captured_request["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(pitch_cli.urllib.request, "urlopen", _fake_urlopen)
+
+    assert main(["download", "submit", "--email", "you@example.com"]) == 0
+    assert captured_request["url"].endswith("/mailformfree.asp")
+    assert "email=you%40example.com" in captured_request["body"]
+    assert captured_request["timeout"] == 30
+
+
 def test_setup_reports_the_installer_drop_root(capsys) -> None:
     assert main(["setup"]) == 1
     captured = capsys.readouterr()

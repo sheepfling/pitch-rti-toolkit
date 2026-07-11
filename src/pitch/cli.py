@@ -10,6 +10,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -282,6 +285,18 @@ def build_parser() -> argparse.ArgumentParser:
     download_script_parser = download_subparsers.add_parser("script", help="Print the standalone browser autofill script.")
     download_script_parser.add_argument("--email", help="Override the destination email address for this output.")
     download_script_parser.set_defaults(handler=handle_download_script)
+
+    download_submit_parser = download_subparsers.add_parser("submit", help="Submit the Pitch free-download request directly.")
+    download_submit_parser.add_argument("--email", help="Override the destination email address for this submission.")
+    download_submit_parser.add_argument("--first-name", "--firstname", dest="first_name", help="Override the first name for this submission.")
+    download_submit_parser.add_argument("--last-name", "--lastname", dest="last_name", help="Override the last name for this submission.")
+    download_submit_parser.add_argument("--title", help="Override the job title for this submission.")
+    download_submit_parser.add_argument("--organization", help="Override the organization name for this submission.")
+    download_submit_parser.add_argument("--organization-type", choices=["Company", "Government", "Academia", "Other"], help="Override the organization type for this submission.")
+    download_submit_parser.add_argument("--product", action="append", dest="products", help="Add a product to request. Repeat for multiple products.")
+    download_submit_parser.add_argument("--newsletter", action="store_true", help="Subscribe the contact to the Pitch newsletter.")
+    download_submit_parser.add_argument("--dry-run", action="store_true", help="Print the submission payload without sending it.")
+    download_submit_parser.set_defaults(handler=handle_download_submit)
 
     start_parser = subparsers.add_parser("start", help="Open the interactive launcher menu or a direct target.")
     start_parser.add_argument(
@@ -1138,6 +1153,33 @@ def _download_contact_payload(contact: dict[str, object]) -> dict[str, object]:
     return payload
 
 
+def _download_submission_payload(contact: dict[str, object]) -> dict[str, str]:
+    products = contact.get("accepted_products", [])
+    if not isinstance(products, list):
+        products = []
+
+    payload = {
+        "download": "prti",
+        "agreeprti": "yes",
+        "email": str(contact.get("destination_email", "")).strip(),
+        "FirstName": str(contact.get("first_name", "")).strip(),
+        "LastName": str(contact.get("last_name", "")).strip(),
+        "Title": str(contact.get("title", "")).strip(),
+        "OrganizationName": str(contact.get("organization", "")).strip(),
+        "organization": str(contact.get("organization_type", "")).strip() or "Other",
+        "country": str(contact.get("country", "")).strip() or "United States",
+        "checklegal": "submitbtn",
+        "rubrik": "Pitch Free download",
+        "till": "hack@pitch.se",
+        "Button": "Submit",
+    }
+
+    if "Pitch pRTI Free" in products:
+        payload["download"] = "prti"
+
+    return payload
+
+
 def _download_bookmarklet_source(contact: dict[str, object]) -> str:
     payload = json.dumps(_download_contact_payload(contact), ensure_ascii=True)
     return f"""javascript:(()=>{{const data={payload};const norm=s=>String(s||'').toLowerCase().replace(/[\\s:_-]+/g,' ').replace(/\\s+/g,' ').trim();const textMatch=(needle,haystack)=>norm(haystack).includes(norm(needle));const rows=[...document.querySelectorAll('tr,li,p,div,fieldset,td,th,label')];const findContainer=needle=>{{const match=rows.find(el=>textMatch(needle,el.textContent));return match?match.closest('tr,li,p,div,fieldset,td,th')||match.parentElement:null;}};const fire=el=>{{el.dispatchEvent(new Event('input',{{bubbles:true}}));el.dispatchEvent(new Event('change',{{bubbles:true}}));}};const setValue=(needle,value)=>{{if(!value) return false;const container=findContainer(needle);if(!container) return false;const field=container.querySelector('input:not([type=checkbox]):not([type=radio]),textarea,select');if(!field) return false;field.value=value;fire(field);return true;}};const clickCheckbox=(needle)=>{{const container=findContainer(needle);if(!container) return false;const field=container.querySelector('input[type=checkbox]');if(!field) return false;if(!field.checked) field.click();return true;}};const clickRadio=(groupNeedle,optionNeedle)=>{{const container=findContainer(groupNeedle);if(!container) return false;for(const radio of container.querySelectorAll('input[type=radio]')){{const labelText=radio.closest('label')?.textContent||radio.parentElement?.textContent||radio.nextElementSibling?.textContent||'';if(textMatch(optionNeedle,labelText)){{if(!radio.checked) radio.click();return true;}}}}return false;}};setValue('e-mail address',data.destination_email);setValue('first name',data.first_name);setValue('last name',data.last_name);setValue('title/position',data.title);setValue('name of organization',data.organization);setValue('country',data.country);clickRadio('type of organization',data.organization_type);for(const product of data.accepted_products){{clickCheckbox(product);if(textMatch('Pitch pRTI Free',product)) clickCheckbox('I accept the Pitch pRTI license agreement');if(textMatch('Pitch Visual OMT Free',product)) clickCheckbox('I accept the Pitch Visual OMT license agreement');if(textMatch('Pitch Unreal Engine Connector Free',product)) clickCheckbox('I accept the Pitch Unreal Engine Connector license agreement');}}if(data.subscribe_newsletter) clickCheckbox('Subscribe to Pitch Newsletter');const emailField=findContainer('e-mail address')?.querySelector('input');if(emailField) emailField.focus();}})()"""
@@ -1272,12 +1314,23 @@ main();
 """
 
 
+def _download_submit_request(contact: dict[str, object]) -> urllib.request.Request:
+    payload = _download_submission_payload(contact)
+    body = urllib.parse.urlencode(payload).encode("utf-8")
+    return urllib.request.Request(
+        f"{PITCH_FREE_DOWNLOAD_URL.rsplit('/', 1)[0]}/mailformfree.asp",
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+
+
 def handle_download(args: argparse.Namespace) -> int:
     parser = getattr(args, "parser", None)
     if parser is not None:
         parser.print_help()
     else:
-        print("Usage: pitch download init --email you@example.com")
+        print("Usage: pitch download init --email you@example.com | pitch download submit --email you@example.com")
     return 0
 
 
@@ -1318,6 +1371,47 @@ def handle_download_script(args: argparse.Namespace) -> int:
     contact = _load_download_contact()
     print(_download_script_source(contact))
     return 0
+
+
+def handle_download_submit(args: argparse.Namespace) -> int:
+    contact = _load_download_contact()
+    if args.email:
+        contact["destination_email"] = args.email
+    if args.first_name:
+        contact["first_name"] = args.first_name
+    if args.last_name:
+        contact["last_name"] = args.last_name
+    if args.title:
+        contact["title"] = args.title
+    if args.organization:
+        contact["organization"] = args.organization
+    if args.organization_type:
+        contact["organization_type"] = args.organization_type
+    if args.products:
+        contact["accepted_products"] = args.products
+    if args.newsletter:
+        contact["subscribe_newsletter"] = True
+
+    payload = _download_submission_payload(contact)
+    if args.dry_run:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+
+    request = _download_submit_request(contact)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            body = response.read().decode("utf-8", errors="replace")
+    except urllib.error.URLError as exc:
+        print(f"Could not submit Pitch free download request: {exc}", file=sys.stderr)
+        return 1
+
+    if "Done." in body or "Sending download information" in body:
+        print(f"Pitch free download request submitted for {payload['email']}.")
+        return 0
+
+    print("Pitch free download request sent, but the response was unexpected.", file=sys.stderr)
+    print(body[:2000], file=sys.stderr)
+    return 1
 
 
 def handle_start(args: argparse.Namespace) -> int:
