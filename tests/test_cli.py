@@ -105,7 +105,11 @@ def test_setup_falls_back_to_legacy_rti_when_core_installers_are_missing(monkeyp
     monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", str(tmp_path / "staged"))
 
     installed: list[tuple[str, str]] = []
-    monkeypatch.setattr(pitch_cli, "run_installer", lambda installer_path, cwd=None: installed.append((installer_path.name, str(cwd))))
+    monkeypatch.setattr(
+        pitch_cli,
+        "run_installer",
+        lambda installer_path, cwd=None, quiet=False: installed.append((installer_path.name, str(cwd))),
+    )
     monkeypatch.setattr(pitch_cli, "_mark_component_installed", lambda *args, **kwargs: None)
     monkeypatch.setattr(pitch_cli, "_installed_components", lambda: set())
 
@@ -113,6 +117,29 @@ def test_setup_falls_back_to_legacy_rti_when_core_installers_are_missing(monkeyp
     captured = capsys.readouterr()
     assert "falling back to the legacy pRTI package" in captured.out
     assert installed == [("prti1516e-free_5_5_10_windows32.exe", str(pitch_cli.ROOT))]
+    assert "Pitch setup finished." in captured.out
+
+
+def test_setup_passes_silent_mode_to_the_installer(monkeypatch, tmp_path, capsys) -> None:
+    source_root = tmp_path / "pitch-download"
+    nested_root = source_root / "bundle"
+    nested_root.mkdir(parents=True)
+    (nested_root / "prti1516e-free_5_5_10_windows32.exe").write_text("legacy", encoding="utf-8")
+    monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", str(tmp_path / "staged"))
+
+    calls: list[tuple[str, bool]] = []
+
+    def _fake_run_installer(installer_path, cwd=None, quiet=False):
+        calls.append((installer_path.name, quiet))
+
+    monkeypatch.setattr(pitch_cli, "run_installer", _fake_run_installer)
+    monkeypatch.setattr(pitch_cli, "_mark_component_installed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pitch_cli, "_installed_components", lambda: set())
+
+    assert main(["setup", "--source", str(source_root), "--silent-install"]) == 0
+    captured = capsys.readouterr()
+    assert "Silent install mode enabled" in captured.out
+    assert calls == [("prti1516e-free_5_5_10_windows32.exe", True)]
     assert "Pitch setup finished." in captured.out
 
 

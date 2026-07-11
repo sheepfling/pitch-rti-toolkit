@@ -238,6 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--probe-ports", action="store_true", help="Probe configured ports after installation.")
     setup_parser.add_argument("--strict-probe", action="store_true", help="Fail if any configured ports are closed.")
     setup_parser.add_argument("--force", action="store_true", help="Rerun installers even if the bundle appears installed.")
+    setup_parser.add_argument("--silent-install", action="store_true", help="Try the vendor installers in quiet mode.")
     setup_parser.add_argument("--ports-config", default=str(ASSET_ROOT / "ports.conf"), help="Port probe configuration file.")
     setup_parser.add_argument("--source", help="Folder to scan and stage into the writable installer cache before setup.")
     setup_parser.set_defaults(handler=handle_setup)
@@ -838,6 +839,8 @@ def handle_setup(args: argparse.Namespace) -> int:
 
     if platform.system() == "Linux" and args.include_legacy_rti:
         print("Legacy RTI package is Windows-only in this bundle, so it is skipped on Linux.")
+    if args.silent_install:
+        print("Silent install mode enabled; using vendor quiet flags where supported.")
 
     resolved_specs: list[tuple[InstallSpec, Path]] = []
     unresolved_specs: list[InstallSpec] = []
@@ -859,7 +862,7 @@ def handle_setup(args: argparse.Namespace) -> int:
             continue
 
         print(f"Launching {spec.label} from {installer_path}...")
-        run_installer(installer_path, cwd=ROOT)
+        run_installer(installer_path, cwd=ROOT, quiet=args.silent_install)
         _mark_component_installed(spec.key, spec.label, "installer", str(installer_path))
 
     if args.probe_ports:

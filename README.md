@@ -150,6 +150,12 @@ To rerun the installers anyway:
 pitch setup --force
 ```
 
+If the vendor installers support unattended mode on your machine, try:
+
+```bash
+pitch setup --silent-install
+```
+
 ## Verification
 
 `verify` confirms the bundle is complete before you install anything:
