@@ -92,6 +92,7 @@ def test_setup_can_stage_from_a_source_folder(monkeypatch, tmp_path, capsys) -> 
 
     assert main(["setup", "--source", str(source_root)]) == 0
     captured = capsys.readouterr()
+    assert "Staged setup assets from" in captured.out
     assert "Staged 2 file(s)" in captured.out
     assert "Pitch setup finished." in captured.out
 

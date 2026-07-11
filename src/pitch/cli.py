@@ -1201,6 +1201,7 @@ def _stage_assets_for_setup(source_root: str | None, force: bool) -> None:
         raise RuntimeError(
             "Conflicting staged files already exist. Re-run with --force after importing the source folder."
         )
+    print(f"Staged setup assets from {source_path} into {dest_root}")
     if copied:
         print(f"Staged {len(copied)} file(s) into {dest_root}")
     if skipped:
