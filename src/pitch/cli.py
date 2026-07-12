@@ -63,7 +63,7 @@ DOWNLOAD_CONTACT_DEFAULTS = {
     ],
     "subscribe_newsletter": False,
 }
-PITCH_FREE_DOWNLOAD_URL = "https://www2.pitch.se/free/download.asp"
+PITCH_FREE_DOWNLOAD_URL = "https://www2.pitch.se/pRTI1516e/Releases/v5.5.10-free/SnvHLyNhR6A9ZgoQ/install.asp"
 PITCH_FREE_DOWNLOAD_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -1428,8 +1428,8 @@ function main() {{
     throw new Error("This script runs in a browser context only.");
   }}
 
-  if (!location.href.includes("pitch.se/free/download.asp")) {{
-    console.warn("Open the Pitch free download page first:", PITCH_DOWNLOAD_URL);
+  if (!location.href.includes("pitch.se/pRTI1516e/Releases/v5.5.10-free/")) {{
+    console.warn("Open the Pitch download page first:", PITCH_DOWNLOAD_URL);
   }}
 
   const email = window.prompt("Pitch destination email", DEFAULTS.destination_email || "");

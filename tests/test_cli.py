@@ -206,7 +206,7 @@ def test_download_submit_posts_request(monkeypatch) -> None:
     assert "email=you%40example.com" in captured_request["body"]
     assert captured_request["timeout"] == 30
     assert "Mozilla/5.0" in captured_request["headers"]["User-agent"]
-    assert captured_request["headers"]["Referer"].endswith("/free/download.asp")
+    assert captured_request["headers"]["Referer"].endswith("/install.asp")
 
 
 def test_setup_reports_the_installer_drop_root(monkeypatch, tmp_path, capsys) -> None:

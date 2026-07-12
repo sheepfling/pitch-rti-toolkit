@@ -85,6 +85,10 @@ python -m pitch setup --source C:\\Users\\you\\Downloads\\pitch
 ## Pitch Free-Download Form
 
 Pitch’s free-download page still expects a contact form to be filled out before the bundle is sent.
+The helper now opens the current Pitch install page directly:
+
+`https://www2.pitch.se/pRTI1516e/Releases/v5.5.10-free/SnvHLyNhR6A9ZgoQ/install.asp`
+
 To keep the contact details in one place, copy `pitch/download-contact.example.json` to `.pitch-download-contact.json` and update only the values you want to reuse.
 Or let the CLI generate the local contact file from an email address:
 
