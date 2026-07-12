@@ -89,12 +89,15 @@ If you want to choose an execution route explicitly, use:
 pitch route show
 pitch route run native setup
 pitch route run wsl setup
+pitch route run --wsl-distro 1 wsl setup
 pitch route run docker setup
 pitch setup --route wsl
+pitch setup --route wsl --wsl-distro Ubuntu
 pitch setup --route docker
 ```
 
 `native` runs directly on the host OS, `wsl` runs the command through WSL on Windows, and `docker` runs it in a Linux container.
+`pitch route show` lists WSL distros with indexes, so `--wsl-distro 1` picks the first detected distro and `--wsl-distro Ubuntu` picks by name.
 `pitch setup --route ...` uses the same route choices for the main install flow.
 
 ## Pitch Free-Download Form
