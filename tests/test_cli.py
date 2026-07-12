@@ -440,6 +440,26 @@ def test_route_show_reports_available_routes(monkeypatch, capsys) -> None:
     assert "recommended: wsl" in captured.out
 
 
+def test_default_route_name_prefers_native_on_darwin(monkeypatch) -> None:
+    monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"/usr/local/bin/docker" if name == "docker" else None)
+
+    assert pitch_cli._default_route_name() == "native"
+
+
+def test_default_route_name_falls_back_to_docker_on_windows_when_wsl_missing(monkeypatch) -> None:
+    monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Windows")
+
+    def _fake_which(name: str):
+        if name == "docker":
+            return r"C:\Program Files\Docker\docker.exe"
+        return None
+
+    monkeypatch.setattr(pitch_cli.shutil, "which", _fake_which)
+
+    assert pitch_cli._default_route_name() == "docker"
+
+
 def test_route_run_native_delegates_to_main(monkeypatch) -> None:
     captured = {}
 

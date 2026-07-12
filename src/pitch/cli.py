@@ -290,9 +290,16 @@ def _route_available(route_name: str) -> bool:
 
 
 def _default_route_name() -> str:
-    if platform.system() == "Windows" and _route_available("wsl"):
-        return "wsl"
-    if _route_available("docker"):
+    system = platform.system()
+    if system == "Windows":
+        if _route_available("wsl"):
+            return "wsl"
+        if _route_available("docker"):
+            return "docker"
+        return "native"
+    if system == "Darwin":
+        return "native"
+    if _route_available("docker") and system not in {"Linux"}:
         return "docker"
     return "native"
 
