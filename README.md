@@ -8,6 +8,7 @@ It is intended to be cloned directly or added as a git submodule from a larger p
 ## Quick Flow
 
 `pitch` is the canonical entry point after installation. The `setup`, `verify`, `status`, `probe`, `doctor`, and `config` subcommands all share the same Python implementation.
+`pitch preflight` gives you a cached readiness report for Docker, the bundle, the RTI launcher, and configured ports.
 
 For local development from a checkout, install the project in editable mode first:
 
@@ -241,5 +242,5 @@ pitch setup --probe-ports
 1. Run `pitch verify` to confirm the bundle is intact.
 2. Run `pitch setup` to install the core Pitch stack.
 3. Run `pitch doctor` to inspect the Python workflow and detected install roots.
-4. Run `pitch status` to see install state, RTI smoke availability, and port readiness.
+4. Run `pitch preflight` to capture a readiness report, then `pitch status` to see install state, RTI smoke availability, and port readiness.
 5. Run `pitch start <target> --probe-ports` to launch a target and check the port profile.

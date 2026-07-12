@@ -51,6 +51,8 @@ INSTALLER_DROP_ROOT = resolve_installer_drop_root()
 DOWNLOAD_CONTACT_FILENAME = ".pitch-download-contact.json"
 DOWNLOAD_CONTACT_TEMPLATE = ASSET_ROOT / "download-contact.example.json"
 DOWNLOAD_SCRIPT_PATH = ASSET_ROOT / "download-autofill.js"
+PREFLIGHT_ARTIFACT_ROOT = USER_DATA_ROOT / "preflight"
+PREFLIGHT_ARTIFACT_FILENAME = "pitch-preflight.json"
 DOWNLOAD_CONTACT_DEFAULTS = {
     "first_name": "John",
     "last_name": "Doe",
@@ -484,15 +486,21 @@ def _route_payload_command(pitch_args: list[str], route_name: str, wsl_distro: s
 
 
 def _docker_preflight_check() -> bool:
+    docker_status, docker_detail, docker_ok = _docker_preflight_status()
+    if docker_ok:
+        return True
+    print(docker_detail, file=sys.stderr)
+    return False
+
+
+def _docker_preflight_status() -> tuple[str, str, bool]:
     try:
         completed = subprocess.run(["docker", "info"], check=False, capture_output=True, text=True)
     except OSError as exc:
-        print("Could not reach the Docker CLI to verify the daemon.", file=sys.stderr)
-        print(str(exc), file=sys.stderr)
-        return False
+        return ("missing", f"Could not reach the Docker CLI to verify the daemon: {exc}", False)
 
     if completed.returncode == 0:
-        return True
+        return ("ok", "Docker daemon is reachable.", True)
 
     output = "\n".join(
         part.strip()
@@ -501,14 +509,16 @@ def _docker_preflight_check() -> bool:
     )
     normalized = output.lower()
     if "permission denied while trying to connect to the docker api" in normalized or "docker_engine" in normalized:
-        print("Docker Desktop is reachable, but this session cannot access the Docker API pipe.", file=sys.stderr)
-        print("Try rerunning from an elevated PowerShell session or make sure Docker Desktop is running.", file=sys.stderr)
-        return False
+        return (
+            "blocked",
+            "Docker Desktop is reachable, but this session cannot access the Docker API pipe.\n"
+            "Try rerunning from an elevated PowerShell session or make sure Docker Desktop is running.",
+            False,
+        )
 
-    print("Docker is installed, but the daemon is not responding cleanly.", file=sys.stderr)
     if output:
-        print(output, file=sys.stderr)
-    return False
+        return ("blocked", f"Docker is installed, but the daemon is not responding cleanly.\n{output}", False)
+    return ("blocked", "Docker is installed, but the daemon is not responding cleanly.", False)
 
 
 def _run_route_command(route_name: str, pitch_args: list[str], wsl_distro: str | None = None) -> int:
@@ -581,6 +591,12 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--quiet", action="store_true", help="Only report failures.")
     verify_parser.add_argument("--rti-smoke", action="store_true", help="Also run the installed RTI smoke test when available.")
     verify_parser.set_defaults(handler=handle_verify)
+
+    preflight_parser = subparsers.add_parser("preflight", help="Check Docker, bundle, RTI, and port readiness.")
+    preflight_parser.add_argument("--config", default=str(ASSET_ROOT / "ports.conf"), help="Port probe configuration file.")
+    preflight_parser.add_argument("--json", action="store_true", help="Print the preflight report as JSON.")
+    preflight_parser.add_argument("--json-file", type=Path, help="Write the preflight report JSON to this file.")
+    preflight_parser.set_defaults(handler=handle_preflight)
 
     probe_parser = subparsers.add_parser("probe", help="Probe configured Pitch RTI ports.")
     probe_parser.add_argument("--config", default=str(ASSET_ROOT / "ports.conf"), help="Port probe configuration file.")
@@ -747,6 +763,52 @@ def _save_state(state: dict[str, object]) -> None:
     save_install_state(_state_file(), state)
 
 
+def _preflight_artifact_dir() -> Path:
+    raw = os.environ.get("PITCH_PREFLIGHT_ARTIFACT_ROOT")
+    if raw:
+        return Path(raw).expanduser()
+    return PREFLIGHT_ARTIFACT_ROOT
+
+
+def _preflight_artifact_path() -> Path:
+    return _preflight_artifact_dir() / PREFLIGHT_ARTIFACT_FILENAME
+
+
+def _load_preflight_report() -> dict[str, object] | None:
+    path = _preflight_artifact_path()
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _save_preflight_report(report: dict[str, object]) -> None:
+    _write_json_file(_preflight_artifact_path(), report)
+
+
+def _render_path(repo_root: Path, raw: str | None) -> str | None:
+    if raw is None:
+        return None
+
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        return path.as_posix()
+
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+
+    try:
+        return resolved.relative_to(repo_root).as_posix()
+    except ValueError:
+        return resolved.as_posix()
+
+
 def _mark_component_installed(component_key: str, label: str, source: str, detail: str) -> None:
     state = _load_state()
     components = state.setdefault("components", {})
@@ -780,6 +842,136 @@ def _mark_rti_smoke_result(passed: bool, detail: str) -> None:
     state["bundle_fingerprint"] = bundle_fingerprint(ROOT)
     state["platform"] = platform.system()
     _save_state(state)
+
+
+def _preflight_report(config_name: str | None = None) -> dict[str, object]:
+    docker_status, docker_detail, docker_ok = _docker_preflight_status()
+    bundle_failures = _verify_paths()
+    bundle_ok = not bundle_failures
+    launcher = _discover_installed_runtime_launcher("prti1516e")
+    launcher_available = launcher is not None
+    state = _load_state()
+    checks = state.get("checks") if isinstance(state, dict) else None
+    smoke_check = checks.get("rti_smoke") if isinstance(checks, dict) else None
+    if isinstance(smoke_check, dict):
+        smoke_status = str(smoke_check.get("status", "unknown")).lower()
+        smoke_timestamp = str(smoke_check.get("timestamp", ""))
+        smoke_detail = str(smoke_check.get("detail", "")).strip()
+    else:
+        smoke_status = "never"
+        smoke_timestamp = ""
+        smoke_detail = ""
+
+    config_path = Path(config_name or str(ASSET_ROOT / "ports.conf"))
+    if not config_path.is_absolute():
+        config_path = ROOT / config_path
+    port_results = probe_targets(parse_ports_config(config_path))
+    port_status = "ok"
+    port_detail = "no ports configured"
+    if port_results:
+        if all(open_ for _, open_ in port_results):
+            port_detail = ", ".join(
+                f"{target.label or f'{target.host}:{target.port}'}={target.host}:{target.port}"
+                for target, open_ in port_results
+            )
+        else:
+            port_status = "blocked"
+            blocked = [
+                f"{target.label or f'{target.host}:{target.port}'}={target.host}:{target.port}"
+                for target, open_ in port_results
+                if not open_
+            ]
+            port_detail = ", ".join(blocked)
+
+    bundle_detail = "ok" if bundle_ok else "; ".join(bundle_failures[:3])
+    launcher_detail = str(launcher) if launcher is not None else "No installed Pitch RTI launcher was found."
+    smoke_detail_value = smoke_detail or ("No RTI smoke test has been run yet." if launcher_available else "RTI launcher is unavailable.")
+
+    checks_payload = [
+        {
+            "name": "docker",
+            "ok": docker_ok,
+            "status": docker_status,
+            "detail": docker_detail,
+        },
+        {
+            "name": "bundle",
+            "ok": bundle_ok,
+            "status": "ok" if bundle_ok else "blocked",
+            "detail": bundle_detail,
+        },
+        {
+            "name": "rti_launcher",
+            "ok": launcher_available,
+            "status": "available" if launcher_available else "missing",
+            "detail": launcher_detail,
+        },
+        {
+            "name": "rti_smoke",
+            "ok": smoke_status == "passed",
+            "status": smoke_status,
+            "detail": smoke_detail_value,
+            "timestamp": smoke_timestamp or None,
+        },
+        {
+            "name": "ports",
+            "ok": port_status == "ok",
+            "status": port_status,
+            "detail": port_detail,
+        },
+    ]
+
+    environment = "ready"
+    next_step = "run `pitch verify --rti-smoke` or `pitch start prti1516e`"
+    if not docker_ok:
+        environment = "docker-blocked"
+        next_step = "fix Docker and rerun `pitch preflight`"
+    elif not bundle_ok:
+        environment = "bundle-blocked"
+        next_step = "run `pitch verify` or restore the missing bundle files"
+    elif not launcher_available:
+        environment = "runtime-blocked"
+        next_step = "run `pitch setup` to install the Pitch RTI"
+    elif port_status != "ok":
+        environment = "ports-blocked"
+        next_step = "fix the configured ports and rerun `pitch preflight`"
+    elif smoke_status == "failed":
+        environment = "smoke-blocked"
+        next_step = "rerun `pitch rti smoke` after fixing the RTI launcher"
+
+    result = "ready"
+    if environment != "ready":
+        result = "blocked: fix the prerequisite(s) above and rerun"
+
+    return {
+        "tool": "pitch-preflight",
+        "platform": platform.system(),
+        "environment": environment,
+        "result": result,
+        "checks": checks_payload,
+        "rti": {
+            "launcher": _render_path(ROOT, str(launcher) if launcher is not None else None),
+            "smoke": {
+                "status": smoke_status,
+                "timestamp": smoke_timestamp or None,
+                "detail": smoke_detail_value,
+            },
+        },
+        "ports": {
+            "config": _render_path(ROOT, str(config_path)),
+            "targets": [
+                {
+                    "host": target.host,
+                    "port": target.port,
+                    "label": target.label,
+                    "open": open_,
+                }
+                for target, open_ in port_results
+            ],
+        },
+        "next_step": next_step,
+        "exit_code": 0 if environment == "ready" else 1,
+    }
 
 
 def _state_installed_components() -> set[str]:
@@ -1345,6 +1537,32 @@ def handle_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_preflight(args: argparse.Namespace) -> int:
+    report = _preflight_report(getattr(args, "config", None))
+    _save_preflight_report(report)
+    if getattr(args, "json_file", None) is not None:
+        _write_json_file(Path(args.json_file), report)
+
+    if getattr(args, "json", False):
+        json.dump(report, sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+    else:
+        print("Pitch preflight:")
+        for check in report.get("checks", []):
+            if not isinstance(check, dict):
+                continue
+            name = str(check.get("name", "check"))
+            status = str(check.get("status", "unknown"))
+            detail = str(check.get("detail", "")).strip()
+            print(f"  {name}: {status}")
+            if detail:
+                print(f"    {detail}")
+        print(f"  environment: {report.get('environment', 'unknown')}")
+        print(f"  next step: {report.get('next_step', 'rerun after fixing prerequisites')}")
+
+    return int(report.get("exit_code", 1))
+
+
 def handle_probe(args: argparse.Namespace) -> int:
     config_path = Path(args.config)
     if not config_path.is_absolute():
@@ -1426,6 +1644,21 @@ def handle_status(args: argparse.Namespace) -> int:
         print("Install overrides:")
         for component in sorted(configured_roots):
             print(f"  {component} -> {configured_roots[component]}")
+
+    print("Preflight:")
+    preflight = _load_preflight_report()
+    if isinstance(preflight, dict):
+        environment = str(preflight.get("environment", "unknown"))
+        result = str(preflight.get("result", "unknown"))
+        print(f"  cached: yes")
+        print(f"  environment: {environment}")
+        print(f"  result: {result}")
+        next_step = str(preflight.get("next_step", "")).strip()
+        if next_step:
+            print(f"  next step: {next_step}")
+    else:
+        print("  cached: no")
+        print("  environment: unknown")
 
     print("RTI smoke test:")
     launcher = _discover_installed_runtime_launcher("prti1516e")

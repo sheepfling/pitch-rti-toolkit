@@ -43,6 +43,34 @@ def test_status_handles_empty_port_configuration(capsys) -> None:
     captured = capsys.readouterr()
     assert "Route options:" in captured.out
     assert "recommended:" in captured.out
+    assert "Preflight:" in captured.out
+
+
+def test_preflight_writes_a_json_artifact(monkeypatch, capsys, tmp_path) -> None:
+    monkeypatch.setenv("PITCH_PREFLIGHT_ARTIFACT_ROOT", str(tmp_path / "preflight"))
+    monkeypatch.setattr(pitch_cli, "_docker_preflight_status", lambda: ("ok", "Docker daemon is reachable.", True))
+    monkeypatch.setattr(pitch_cli, "_verify_paths", lambda: [])
+    monkeypatch.setattr(pitch_cli, "_discover_installed_runtime_launcher", lambda component_key: Path(r"C:\Program Files\prti1516e\bin\pRTI1516e-nogui.bat") if component_key == "prti1516e" else None)
+    monkeypatch.setattr(
+        pitch_cli,
+        "_load_state",
+        lambda: {
+            "checks": {
+                "rti_smoke": {
+                    "status": "passed",
+                    "timestamp": "2026-07-12T12:34:56+00:00",
+                    "detail": r"C:\\Program Files\\prti1516e\\bin\\pRTI1516e-nogui.bat",
+                }
+            }
+        },
+    )
+
+    assert main(["preflight", "--json"]) == 0
+    captured = capsys.readouterr()
+    assert '"tool": "pitch-preflight"' in captured.out
+    assert '"environment": "ready"' in captured.out
+    artifact = tmp_path / "preflight" / "pitch-preflight.json"
+    assert artifact.exists()
 
 
 def test_status_reports_rti_smoke_availability_and_last_pass(monkeypatch, capsys) -> None:
