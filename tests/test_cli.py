@@ -442,7 +442,7 @@ def test_route_show_reports_available_routes(monkeypatch, capsys) -> None:
     assert "WSL default distro: Ubuntu" in captured.out
     assert "WSL default: the configured default distro unless --wsl-distro is set" in captured.out
     assert "WSL selected: Ubuntu" in captured.out
-    assert "recommended: wsl - Windows prefers WSL when it is available." in captured.out
+    assert "recommended: native - Windows now stays on native execution by default." in captured.out
 
 
 def test_default_route_name_prefers_native_on_darwin(monkeypatch) -> None:
@@ -452,24 +452,17 @@ def test_default_route_name_prefers_native_on_darwin(monkeypatch) -> None:
     assert pitch_cli._default_route_name() == "native"
 
 
-def test_default_route_name_falls_back_to_docker_on_windows_when_wsl_missing(monkeypatch) -> None:
+def test_default_route_name_uses_native_on_windows(monkeypatch) -> None:
     monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Windows")
 
-    def _fake_which(name: str):
-        if name == "docker":
-            return r"C:\Program Files\Docker\docker.exe"
-        return None
-
-    monkeypatch.setattr(pitch_cli.shutil, "which", _fake_which)
-
-    assert pitch_cli._default_route_name() == "docker"
+    assert pitch_cli._default_route_name() == "native"
 
 
 def test_default_route_reason_matches_heuristic(monkeypatch) -> None:
     monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Windows")
     monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"C:\Windows\System32\wsl.exe" if name == "wsl.exe" else None)
 
-    assert pitch_cli._default_route_reason() == "Windows prefers WSL when it is available."
+    assert pitch_cli._default_route_reason() == "Windows now stays on native execution by default."
 
 
 def test_route_run_native_delegates_to_main(monkeypatch) -> None:

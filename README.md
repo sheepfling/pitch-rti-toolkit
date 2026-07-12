@@ -97,6 +97,7 @@ pitch setup --route docker
 ```
 
 `native` runs directly on the host OS, `wsl` runs the command through WSL on Windows, and `docker` runs it in a Linux container.
+On Windows, the CLI now recommends `native` by default and leaves `wsl` and `docker` as explicit opt-in routes.
 `pitch route show` lists WSL distros with indexes, so `--wsl-distro 1` picks the first detected distro and `--wsl-distro Ubuntu` picks by name.
 `pitch setup --route ...` uses the same route choices for the main install flow.
 

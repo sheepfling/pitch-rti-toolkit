@@ -291,26 +291,15 @@ def _route_available(route_name: str) -> bool:
 
 def _default_route_name() -> str:
     system = platform.system()
-    if system == "Windows":
-        if _route_available("wsl"):
-            return "wsl"
-        if _route_available("docker"):
-            return "docker"
-        return "native"
     if system == "Darwin":
         return "native"
-    if _route_available("docker") and system not in {"Linux"}:
-        return "docker"
     return "native"
 
 
 def _default_route_reason() -> str:
     system = platform.system()
-    default = _default_route_name()
-    if default == "wsl":
-        return "Windows prefers WSL when it is available."
-    if default == "docker":
-        return "Windows falls back to Docker when WSL is unavailable."
+    if system == "Windows":
+        return "Windows now stays on native execution by default."
     if system == "Darwin":
         return "macOS stays on native execution by default."
     return "Native execution is the default on this system."
