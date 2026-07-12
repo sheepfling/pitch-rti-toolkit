@@ -315,6 +315,11 @@ def _print_route_visibility() -> None:
     print(f"  recommended: {_default_route_name()}")
 
 
+def _route_context_name() -> str | None:
+    value = os.environ.get("PITCH_ROUTE_CONTEXT", "").strip().lower()
+    return value or None
+
+
 def _wsl_command_path(path: Path) -> str:
     value = str(path)
     if _looks_like_windows_path(value):
@@ -382,8 +387,16 @@ def _run_route_command(route_name: str, pitch_args: list[str]) -> int:
         return 1
 
     command = _route_payload_command(pitch_args, route_name)
-    completed = subprocess.run(command, check=False)
+    route_env = os.environ.copy()
+    route_env.update(_route_payload_env(route_name))
+    completed = subprocess.run(command, check=False, env=route_env)
     return int(completed.returncode)
+
+
+def _route_payload_env(route_name: str) -> dict[str, str]:
+    if route_name not in {"wsl", "docker"}:
+        return {}
+    return {"PITCH_ROUTE_CONTEXT": route_name}
 
 
 def _build_setup_argv(args: argparse.Namespace, route_name: str = "native") -> list[str]:
@@ -1009,6 +1022,10 @@ def handle_setup(args: argparse.Namespace) -> int:
     route_name = getattr(args, "route", "native")
     if route_name == "auto":
         route_name = _default_route_name()
+
+    selected_route = route_name if route_name != "native" else _route_context_name() or "native"
+    _print_route_visibility()
+    print(f"Selected route: {selected_route}")
     if route_name != "native":
         return _run_route_command(route_name, _build_setup_argv(args, route_name="native"))
 

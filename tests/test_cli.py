@@ -98,6 +98,8 @@ def test_setup_can_stage_from_a_source_folder(monkeypatch, tmp_path, capsys) -> 
 
     assert main(["setup", "--source", str(source_root)]) == 0
     captured = capsys.readouterr()
+    assert "Route options:" in captured.out
+    assert "Selected route: native" in captured.out
     assert "Staged setup assets from" in captured.out
     assert "Staged 2 file(s)" in captured.out
     assert "Pitch setup finished." in captured.out
@@ -457,8 +459,9 @@ def test_route_run_wsl_translates_windows_paths(monkeypatch) -> None:
     class _Result:
         returncode = 0
 
-    def _fake_run(command, check=False):
+    def _fake_run(command, check=False, env=None):
         captured["command"] = command
+        captured["env"] = env
         return _Result()
 
     monkeypatch.setattr(pitch_cli.subprocess, "run", _fake_run)
@@ -468,6 +471,7 @@ def test_route_run_wsl_translates_windows_paths(monkeypatch) -> None:
     assert command[0] == "wsl.exe"
     assert command[1:4] == ["--cd", "/mnt/c/Users/peanu/GIT/sheepfling/pitch-rti-toolkit", "bash"]
     assert "/mnt/c/Users/peanu/Downloads/pitch" in command[-1]
+    assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "wsl"
 
 
 def test_route_run_docker_builds_container_command(monkeypatch) -> None:
@@ -478,8 +482,9 @@ def test_route_run_docker_builds_container_command(monkeypatch) -> None:
     class _Result:
         returncode = 0
 
-    def _fake_run(command, check=False):
+    def _fake_run(command, check=False, env=None):
         captured["command"] = command
+        captured["env"] = env
         return _Result()
 
     monkeypatch.setattr(pitch_cli.subprocess, "run", _fake_run)
@@ -489,6 +494,7 @@ def test_route_run_docker_builds_container_command(monkeypatch) -> None:
     assert command[0] == "docker"
     assert "python:3.12" in command
     assert command[command.index("sh")] == "sh"
+    assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "docker"
 
 
 def test_setup_route_wsl_dispatches_through_route_runner(monkeypatch) -> None:
