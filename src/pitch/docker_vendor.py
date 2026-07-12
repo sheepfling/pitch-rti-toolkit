@@ -13,6 +13,7 @@ import urllib.request
 from pathlib import Path
 
 from pitch.common import coerce_env_path, resolved_docker_command
+from pitch.ports import route_rti_port, route_webview_port
 from pitch.routes import discovered_prti_install_root
 from pitch.settings import read_env_value, read_settings_value, set_settings_value, vendor_crc_settings_path
 from pitch_bootstrap import ROOT, resolve_artifact_root, resolve_asset_root, resolve_installer_drop_root, resolve_user_data_root
@@ -231,11 +232,16 @@ def vendor_docker_payload(*, enable_hla4_preview: bool = False) -> dict[str, str
     if install_root is None:
         raise ValueError("Could not find a pRTI installation root. Set PITCH_PRTI_HOME or install pRTI first.")
 
+    crc_port = route_rti_port("vendor-docker")
+    webview_port = route_webview_port("vendor-docker")
+
     payload = {
         "PITCH_PRTI_HOME": str(install_root),
         "PITCH_VENDOR_DOCKER_BUILD_ROOT": str(vendor_docker_build_root()),
         "PITCH_VENDOR_DOCKER_SETTINGS_ROOT": str(vendor_docker_settings_root()),
         "PITCH_VENDOR_DOCKER_ENV_FILE": str(vendor_docker_env_path()),
+        "PITCH_VENDOR_CRC_PORT": str(crc_port),
+        "PITCH_VENDOR_WEB_VIEW_PORT": str(webview_port),
         "PITCH_VENDOR_CONTAINER_WORKDIR": container_path("opt", "prti1516e"),
         "PITCH_VENDOR_CONTAINER_SETTINGS_ROOT": container_path("root", "prti1516e"),
         "LICENSE_SERVER": os.environ.get("LICENSE_SERVER", "pfls"),
@@ -292,7 +298,8 @@ def vendor_docker_webview_check(*, timeout_seconds: float = 10.0) -> tuple[bool,
     if not vendor_docker_webview_payload_available():
         return True, "Vendor Web View probe skipped; no Web View payload was staged."
 
-    url = "http://127.0.0.1:8080/webview/"
+    webview_port = read_env_value(env_file, "PITCH_VENDOR_WEB_VIEW_PORT") or str(route_webview_port("vendor-docker"))
+    url = f"http://127.0.0.1:{webview_port}/webview/"
     request = urllib.request.Request(url, method="GET")
     deadline = time.monotonic() + timeout_seconds
     last_error: str | None = None
@@ -313,11 +320,15 @@ def vendor_docker_webview_check(*, timeout_seconds: float = 10.0) -> tuple[bool,
 
 
 def vendor_docker_smoke_check(*, timeout_seconds: float = 60.0, interval_seconds: float = 1.0) -> tuple[bool, str]:
-    if not vendor_docker_wait_for_port("127.0.0.1", 8989, timeout_seconds=timeout_seconds, interval_seconds=interval_seconds):
-        return False, "Vendor CRC did not become reachable on 127.0.0.1:8989 within the timeout."
+    crc_port = route_rti_port("vendor-docker")
+    webview_port = route_webview_port("vendor-docker")
 
-    messages = ["Vendor CRC is reachable on 127.0.0.1:8989."]
+    if not vendor_docker_wait_for_port("127.0.0.1", crc_port, timeout_seconds=timeout_seconds, interval_seconds=interval_seconds):
+        return False, f"Vendor CRC did not become reachable on 127.0.0.1:{crc_port} within the timeout."
+
+    messages = [f"Vendor CRC is reachable on 127.0.0.1:{crc_port}."]
     webview_ok, webview_detail = vendor_docker_webview_check(timeout_seconds=10.0)
+    webview_detail = webview_detail.replace("127.0.0.1:8080", f"127.0.0.1:{webview_port}")
     messages.append(webview_detail)
     if not webview_ok:
         return False, "\n".join(messages)

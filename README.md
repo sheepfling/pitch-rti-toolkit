@@ -16,6 +16,24 @@ For local development from a checkout, install the project in editable mode firs
 python -m pip install -e .
 ```
 
+If you work from the same checkout on more than one platform, keep the virtual
+environment path unique per platform. Do not reuse a single `.venv` directory
+between WSL/Linux, Windows, and macOS.
+
+Recommended names:
+
+- WSL/Linux: `.venv-wsl`
+- Windows: `.venv-win`
+- macOS: `.venv-macos`
+
+Then install into the matching environment, for example:
+
+```bash
+./.venv-wsl/bin/python -m pip install -e ".[dev]"
+```
+
+On Windows, use the matching `Scripts\python.exe` path instead.
+
 Use this order for the common path:
 
 ```bash
@@ -121,6 +139,7 @@ On Windows, the CLI now recommends `native` by default and leaves `wsl` and `doc
 `pitch route show` lists WSL distros with indexes, so `--wsl-distro 1` picks the first detected distro and `--wsl-distro Ubuntu` picks by name.
 `pitch setup --route ...` uses the same route choices for the main install flow.
 If you want a tighter approval surface for WSL on Windows, use the repo wrappers at `scripts/pitch-wsl.cmd` or `scripts/pitch-wsl.ps1`, which only invoke `python -m pitch route run wsl` from the repository root.
+Port selection is now route-scoped and deterministic, so `native`, `wsl`, `docker`, and the vendor Docker flow each get their own non-overlapping test ports instead of reusing one shared `8989`/`8080` pair.
 
 The Docker route keeps the mutable pieces outside the checkout:
 
@@ -149,8 +168,9 @@ pitch docker down
 `pitch docker init` copies the vendor `prti1516eCRC.settings` and `prti1516eLRC.settings` into a writable overlay under the user data root, stages the Docker build context into a separate writable folder, writes a separate `pitch-vendor-compose.env`, and keeps the original checkout or wheel untouched.
 If you enable HLA 4 Preview, the copied CRC settings file is updated in place so the setting is discoverable before startup.
 If you drop a `webview.war` file or a `pitchwebview_v*_linux64.sh` installer into `artifacts/installers/` or point `PITCH_INSTALLER_DROP_ROOT` at a custom folder, `pitch docker init` stages it into the vendor build context under `webviewinstaller64/`.
-When that payload is staged, `pitch docker up` and `pitch docker smoke` also probe the `http://127.0.0.1:8080/webview/` path after the RTI port is reachable.
+When that payload is staged, `pitch docker up` and `pitch docker smoke` also probe the generated Web View host port after the RTI port is reachable.
 If no Web View payload is staged, the smoke still passes after the CRC port comes up and reports that the Web View probe was skipped.
+The vendor Docker compose file uses route-scoped host ports from the generated env file, so parallel Windows, WSL, macOS, and Docker smoke runs stop colliding on localhost.
 `pitch docker restart` performs a stop/start cycle and reruns the smoke check, while `pitch docker inspect` prints the setup summary and then shows the Compose `ps --all` output for the vendor CRC container.
 The vendor container Compose file lives at `docker/pitch-vendor-compose.yml` and uses the staged vendor build context created by `pitch docker init`.
 

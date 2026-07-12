@@ -86,10 +86,12 @@ from pitch.docker_vendor import (
     write_docker_env_file as _write_docker_env_file,
     VENDOR_DOCKER_COMPOSE_PATH as _VENDOR_DOCKER_COMPOSE_PATH,
 )
+from pitch.ports import route_rti_port, route_webview_port
 from pitch.routes import (
     chat_launcher_command as _chat_launcher_command,
     chat_sample_choices as _chat_sample_choices,
     discovered_chat_sample_launcher as _discover_chat_sample_launcher,
+    discovered_prti_crc_port as _discovered_prti_crc_port,
     discovered_installed_runtime_launcher as _discover_installed_runtime_launcher_impl,
     discovered_prti_install_root as _discover_prti_install_root,
     default_route_name as _default_route_name,
@@ -111,7 +113,7 @@ from pitch.routes import (
     route_payload_env as _route_payload_env,
     route_specs as _route_specs,
     route_summary as _route_summary,
-    run_chat_process as _run_chat_process,
+    run_chat_process as _run_chat_process_impl,
     run_chat_smoke_test as _run_chat_smoke_test,
     run_route_command as _run_route_command_impl,
     install_specs_for_system as _install_specs_for_system_impl,
@@ -769,17 +771,25 @@ def _run_route_command(route_name: str, pitch_args: list[str], wsl_distro: str |
 
 
 def _route_payload_env(route_name: str, wsl_distro: str | None = None, docker_env_file: Path | None = None) -> dict[str, str]:
-    if route_name not in {"wsl", "docker"}:
-        return {}
     payload = {"PITCH_ROUTE_CONTEXT": route_name}
-    if route_name == "wsl" and wsl_distro:
-        payload["PITCH_WSL_DISTRO"] = wsl_distro
+    if route_name == "native":
+        payload["PITCH_PORT"] = str(_discovered_prti_crc_port(default=route_rti_port("route-native")))
+        payload["PITCH_PORT_PROFILE"] = "route-native"
+        return payload
+    if route_name == "wsl":
+        if wsl_distro:
+            payload["PITCH_WSL_DISTRO"] = wsl_distro
+        payload["PITCH_PORT"] = str(_discovered_prti_crc_port(default=route_rti_port("route-wsl")))
+        payload["PITCH_PORT_PROFILE"] = "route-wsl"
+        return payload
     if route_name == "docker":
         payload["PITCH_DOCKER_PROFILE"] = os.environ.get("PITCH_DOCKER_PROFILE", "future").strip().lower() or "future"
         payload["PITCH_USER_DATA_ROOT"] = str(USER_DATA_ROOT)
         payload["PITCH_INSTALLER_DROP_ROOT"] = str(INSTALLER_DROP_ROOT)
         payload["PITCH_PREFLIGHT_ARTIFACT_ROOT"] = str(PREFLIGHT_ARTIFACT_ROOT)
         payload["PITCH_DOCKER_ENV_FILE"] = str(docker_env_file or _docker_env_path())
+        payload["PITCH_PORT"] = str(route_rti_port("route-docker"))
+        payload["PITCH_PORT_PROFILE"] = "route-docker"
     return payload
 
 
@@ -1720,6 +1730,12 @@ def _chat_sample_choices() -> list[str]:
 
 
 def _chat_launcher_command(launcher: Path) -> list[str]:
+    if launcher.suffix.lower() in {".bat", ".cmd"}:
+        sample_root = launcher.parent.parent.parent
+        jar_path = launcher.parent / f"{launcher.stem}.jar"
+        java_exe = sample_root / "jre" / "bin" / "java.exe"
+        if jar_path.exists() and java_exe.exists():
+            return [str(java_exe), "-Djava.library.path=" + str(sample_root / "lib"), "-jar", str(jar_path)]
     return _launcher_command(launcher)
 
 
@@ -1742,11 +1758,14 @@ def _crc_host_from_log(log_file: Path) -> str | None:
 
 
 def _chat_smoke_host_candidates() -> list[str]:
-    candidates: list[str] = []
+    default_port = _discovered_prti_crc_port(default=route_rti_port("route-native"))
+    candidates: list[str] = [f"127.0.0.1:{default_port}", f"localhost:{default_port}", "127.0.0.1", "localhost"]
 
     env_host = os.environ.get("PITCH_RTI_SMOKE_HOST")
     if env_host:
-        candidates.append(env_host.strip())
+        candidate = env_host.strip()
+        if candidate and candidate not in candidates:
+            candidates.insert(0, candidate)
 
     install_roots: list[Path] = []
     if _is_wsl_environment():
@@ -1766,34 +1785,11 @@ def _chat_smoke_host_candidates() -> list[str]:
             if host and host not in candidates:
                 candidates.append(host)
 
-    if "localhost" not in candidates:
-        candidates.append("localhost")
-
     return candidates
 
 
 def _run_chat_process(command: list[str], *, cwd: Path, username: str, host: str, message: str, final_message: str = ".") -> tuple[int, str]:
-    try:
-        process = subprocess.Popen(
-            command,
-            cwd=str(cwd),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-    except OSError as exc:
-        raise RuntimeError(f"Could not start chat sample: {exc}") from exc
-
-    stdin_payload = f"{host}\n{username}\n{message}\n{final_message}\n"
-    try:
-        output, _ = process.communicate(stdin_payload, timeout=90)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        output, _ = process.communicate()
-        raise RuntimeError(f"Timed out while running chat sample: {command[0]}") from None
-
-    return int(process.returncode or 0), output
+    return _run_chat_process_impl(command, cwd=cwd, username=username, host=host, message=message, final_message=final_message)
 
 
 def _run_chat_smoke_test(variant: str = "auto", *, list_only: bool = False) -> int:
@@ -1910,6 +1906,9 @@ def _run_start_action(action: StartAction, args: argparse.Namespace) -> None:
     launch_env: dict[str, str] = {}
     if getattr(args, "port", None) is not None:
         launch_env["PITCH_PORT"] = str(args.port)
+    else:
+        launch_env["PITCH_PORT"] = str(_discovered_prti_crc_port(default=route_rti_port("route-native")))
+    launch_env["PITCH_PORT_PROFILE"] = "route-native"
     if getattr(args, "ports_config", None):
         launch_env["PITCH_PORTS_CONFIG"] = str((ROOT / args.ports_config).resolve() if not Path(args.ports_config).is_absolute() else Path(args.ports_config))
 
@@ -2488,11 +2487,14 @@ def _vendor_docker_wait_for_port(host: str, port: int, *, timeout_seconds: float
 
 
 def _vendor_docker_smoke_check(*, timeout_seconds: float = 60.0, interval_seconds: float = 1.0) -> tuple[bool, str]:
-    if not _vendor_docker_wait_for_port("127.0.0.1", 8989, timeout_seconds=timeout_seconds, interval_seconds=interval_seconds):
-        return False, "Vendor CRC did not become reachable on 127.0.0.1:8989 within the timeout."
+    crc_port = route_rti_port("vendor-docker")
+    webview_port = route_webview_port("vendor-docker")
+    if not _vendor_docker_wait_for_port("127.0.0.1", crc_port, timeout_seconds=timeout_seconds, interval_seconds=interval_seconds):
+        return False, f"Vendor CRC did not become reachable on 127.0.0.1:{crc_port} within the timeout."
 
-    messages = ["Vendor CRC is reachable on 127.0.0.1:8989."]
+    messages = [f"Vendor CRC is reachable on 127.0.0.1:{crc_port}."]
     webview_ok, webview_detail = _vendor_docker_webview_check(timeout_seconds=10.0)
+    webview_detail = webview_detail.replace("127.0.0.1:8080", f"127.0.0.1:{webview_port}")
     messages.append(webview_detail)
     if not webview_ok:
         return False, "\n".join(messages)

@@ -11,6 +11,9 @@ requires-python = ">=3.10"
 [project.scripts]
 pitch = "pitch.cli:main"
 
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 py-modules = ["pitch_bootstrap"]

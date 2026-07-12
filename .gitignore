@@ -1,5 +1,7 @@
 __pycache__/
 .pytest_cache/
+.venv*/
+src/pitch.egg-info/
 *.pyc
 artifacts/
 .pitch-install-state.json

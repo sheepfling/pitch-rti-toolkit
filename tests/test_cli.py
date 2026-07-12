@@ -6,6 +6,7 @@ import pitch.cli as pitch_cli
 import pitch.execution as pitch_execution
 import pitch.docker_vendor as pitch_docker_vendor
 import pitch.common as pitch_common
+import pitch.ports as pitch_ports
 import pitch.routes as pitch_routes
 import pitch_bootstrap
 from pitch.cli import main
@@ -114,7 +115,7 @@ def test_config_assets_reports_writable_locations() -> None:
 def test_user_data_root_can_be_overridden(monkeypatch) -> None:
     monkeypatch.setenv("PITCH_USER_DATA_ROOT", r"C:\tmp\pitch-user-data")
     assert resolve_user_data_root() == Path(r"C:\tmp\pitch-user-data")
-    assert resolve_installer_drop_root() == Path(r"C:\tmp\pitch-user-data\installers")
+    assert resolve_installer_drop_root() == Path(r"C:\tmp\pitch-user-data") / "installers"
 
 
 def test_bootstrap_uses_the_shared_platform_abstraction(monkeypatch, tmp_path) -> None:
@@ -146,6 +147,20 @@ def test_artifact_root_prefers_the_checkout_artifacts_directory(monkeypatch) -> 
     assert pitch_bootstrap.resolve_artifact_root(pitch_bootstrap.ROOT) == pitch_bootstrap.ROOT / "artifacts"
     assert pitch_bootstrap.install_state_path(pitch_bootstrap.ROOT) == pitch_bootstrap.ROOT / "artifacts" / ".pitch-install-state.json"
     assert pitch_bootstrap.install_roots_path(pitch_bootstrap.ROOT) == pitch_bootstrap.ROOT / "artifacts" / ".pitch-install-roots.json"
+
+
+def test_route_port_profiles_are_stable_and_distinct(monkeypatch) -> None:
+    monkeypatch.delenv("PITCH_PORT_SLOT", raising=False)
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+
+    native_port = pitch_ports.route_rti_port("route-native")
+    wsl_port = pitch_ports.route_rti_port("route-wsl")
+    docker_port = pitch_ports.route_rti_port("route-docker")
+    vendor_port = pitch_ports.route_rti_port("vendor-docker")
+
+    assert len({native_port, wsl_port, docker_port, vendor_port}) == 4
+    assert pitch_ports.route_rti_port("route-native") == native_port
+    assert pitch_ports.route_webview_port("vendor-docker") == pitch_ports.route_webview_port("vendor-docker")
 
     monkeypatch.setenv("PITCH_ARTIFACT_ROOT", r"C:\tmp\pitch-artifacts")
     assert pitch_bootstrap.resolve_artifact_root(pitch_bootstrap.ROOT) == Path(r"C:\tmp\pitch-artifacts")
@@ -271,6 +286,8 @@ def test_rti_smoke_starts_the_console_and_reads_help(monkeypatch, capsys, tmp_pa
     captured = {}
 
     class _Process:
+        returncode = 0
+
         def communicate(self, input=None, timeout=None):
             captured["input"] = input
             captured["timeout"] = timeout
@@ -286,9 +303,10 @@ def test_rti_smoke_starts_the_console_and_reads_help(monkeypatch, capsys, tmp_pa
         def kill(self):
             captured["killed"] = True
 
-    def _fake_popen(command, cwd=None, stdin=None, stdout=None, stderr=None, text=None):
+    def _fake_popen(command, cwd=None, stdin=None, stdout=None, stderr=None, text=None, env=None, creationflags=None):
         captured["command"] = command
         captured["cwd"] = cwd
+        captured["env"] = env
         return _Process()
 
     monkeypatch.setattr(pitch_cli.subprocess, "Popen", _fake_popen)
@@ -326,6 +344,7 @@ def test_rti_smoke_chat_runs_two_federates(monkeypatch, capsys, tmp_path) -> Non
         "_discover_chat_sample_launcher",
         lambda variant=None: ("java-hla4", launcher) if variant in {None, "auto", "java-hla4", "java-hla4-fedpro", "cpp-hla4"} else None,
     )
+    monkeypatch.setattr(pitch_routes, "is_windows_platform", lambda: False)
 
     launched = []
 
@@ -346,21 +365,30 @@ def test_rti_smoke_chat_runs_two_federates(monkeypatch, capsys, tmp_path) -> Non
         def kill(self):
             return None
 
-    def _fake_popen(command, cwd=None, stdin=None, stdout=None, stderr=None, text=None):
+    def _fake_popen(command, cwd=None, stdin=None, stdout=None, stderr=None, text=None, env=None, creationflags=None):
         proc = _Process(command, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, text=text)
         launched.append(proc)
         return proc
 
-    monkeypatch.setattr(pitch_cli.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(pitch_routes.subprocess, "Popen", _fake_popen)
 
     assert main(["rti", "smoke", "chat"]) == 0
     captured = capsys.readouterr()
     assert "Chat smoke variant: java-hla4" in captured.out
     assert "Pitch chat smoke test passed." in captured.out
     assert len(launched) == 2
-    assert launched[0].command[0] in {"cmd.exe", str(launcher)}
+    assert launched[0].command[0] in {"cmd.exe", str(launcher), str(launcher.parent.parent.parent / "jre" / "bin" / "java.exe")}
     assert "pitch-smoke-alpha" in launched[0]._input
     assert "pitch-smoke-bravo" in launched[1]._input
+
+
+def test_chat_smoke_defaults_to_local_host_first(monkeypatch) -> None:
+    monkeypatch.delenv("PITCH_RTI_SMOKE_HOST", raising=False)
+    candidates = pitch_cli._chat_smoke_host_candidates()
+    default_port = pitch_cli._discovered_prti_crc_port(default=8989)
+
+    assert candidates[0] == f"127.0.0.1:{default_port}"
+    assert candidates[1] == f"localhost:{default_port}"
 
 
 def test_rti_smoke_chat_uses_cmd_on_wsl_for_bat_launchers(monkeypatch, capsys, tmp_path) -> None:
@@ -394,7 +422,7 @@ def test_rti_smoke_chat_uses_cmd_on_wsl_for_bat_launchers(monkeypatch, capsys, t
         def kill(self):
             return None
 
-    def _fake_popen(command, cwd=None, stdin=None, stdout=None, stderr=None, text=None):
+    def _fake_popen(command, cwd=None, stdin=None, stdout=None, stderr=None, text=None, env=None, creationflags=None):
         proc = _Process(command, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, text=text)
         launched.append(proc)
         return proc
@@ -410,8 +438,9 @@ def test_setup_can_stage_from_a_source_folder(monkeypatch, tmp_path, capsys) -> 
     source_root = tmp_path / "pitch-download"
     nested_root = source_root / "bundle"
     nested_root.mkdir(parents=True)
-    (nested_root / "HlaStarterKit_v1.0.2_windows64.exe").write_text("hla", encoding="utf-8")
-    (nested_root / "PitchVisualOMTFree_v2.7.0_windows64.exe").write_text("vomt", encoding="utf-8")
+    (nested_root / "HlaStarterKit_v1.0.2_linux64.sh").write_text("hla", encoding="utf-8")
+    (nested_root / "PitchVisualOMTFree_v2.7.0_linux64.sh").write_text("vomt", encoding="utf-8")
+    (nested_root / "prti1516e-free_5_5_10_linux64.sh").write_text("rti", encoding="utf-8")
     monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", str(tmp_path / "staged"))
     monkeypatch.setattr(pitch_cli, "run_installer", lambda *args, **kwargs: None)
     monkeypatch.setattr(pitch_cli, "_mark_component_installed", lambda *args, **kwargs: None)
@@ -422,7 +451,7 @@ def test_setup_can_stage_from_a_source_folder(monkeypatch, tmp_path, capsys) -> 
     assert "Route options:" in captured.out
     assert "Selected route: native" in captured.out
     assert "Staged setup assets from" in captured.out
-    assert "Staged 2 file(s)" in captured.out
+    assert "Staged 3 file(s)" in captured.out
     assert "Pitch setup finished." in captured.out
 
 
@@ -445,9 +474,14 @@ def test_setup_falls_back_to_legacy_rti_when_core_installers_are_missing(monkeyp
 
     assert main(["setup", "--source", str(source_root)]) == 0
     captured = capsys.readouterr()
-    assert "falling back to the legacy pRTI package" in captured.out
+    if pitch_cli._platform_system() == "Windows":
+        assert "falling back to the legacy pRTI package" in captured.out
+        expected_legacy_name = "prti1516e-free_5_5_10_windows64.exe"
+    else:
+        assert "Continuing with the installers that were found." in captured.out
+        expected_legacy_name = "prti1516e-free_5_5_10_windows32.exe"
     assert "CRC settings discovery:" in captured.out
-    assert installed == [("prti1516e-free_5_5_10_windows64.exe", str(pitch_cli.ROOT))]
+    assert installed == [(expected_legacy_name, str(pitch_cli.ROOT))]
     assert "Pitch setup finished." in captured.out
 
 
@@ -470,7 +504,8 @@ def test_setup_prefers_legacy_rti_64_bit_when_present(monkeypatch, tmp_path, cap
 
     assert main(["setup", "--source", str(source_root)]) == 0
     captured = capsys.readouterr()
-    assert "falling back to the legacy pRTI package" in captured.out
+    if pitch_cli._platform_system() == "Windows":
+        assert "falling back to the legacy pRTI package" in captured.out
     assert installed == [("prti1516e-free_5_5_10_windows64.exe", str(pitch_cli.ROOT))]
     assert "Pitch setup finished." in captured.out
 
@@ -494,7 +529,7 @@ def test_setup_passes_silent_mode_to_the_installer(monkeypatch, tmp_path, capsys
     assert main(["setup", "--source", str(source_root), "--silent-install"]) == 0
     captured = capsys.readouterr()
     assert "Silent install mode enabled" in captured.out
-    assert calls == [("prti1516e-free_5_5_10_windows64.exe", True)]
+    assert calls == [("prti1516e-free_5_5_10_windows32.exe" if pitch_cli._platform_system() != "Windows" else "prti1516e-free_5_5_10_windows64.exe", True)]
     assert "Pitch setup finished." in captured.out
 
 
@@ -1213,6 +1248,8 @@ def test_docker_init_copies_vendor_settings_and_enables_hla4_preview(monkeypatch
     assert "CRC_ENABLE_HLA4_PREVIEW=1" in env_file.read_text(encoding="utf-8")
     assert "PITCH_PRTI_HOME=" in env_file.read_text(encoding="utf-8")
     assert "PITCH_VENDOR_DOCKER_BUILD_ROOT=" in env_file.read_text(encoding="utf-8")
+    assert "PITCH_VENDOR_CRC_PORT=" in env_file.read_text(encoding="utf-8")
+    assert "PITCH_VENDOR_WEB_VIEW_PORT=" in env_file.read_text(encoding="utf-8")
     assert "CRC.enableHla4PreviewFeatures=true" in crc_settings.read_text(encoding="utf-8")
 
 
@@ -1298,7 +1335,8 @@ def test_docker_up_builds_the_vendor_compose_command(monkeypatch, tmp_path) -> N
         return _Result(0)
 
     monkeypatch.setattr(pitch_cli.subprocess, "run", _fake_run)
-    monkeypatch.setattr(pitch_cli, "_vendor_docker_smoke_check", lambda: (True, "Vendor CRC is reachable on 127.0.0.1:8989."))
+    crc_port = pitch_ports.route_rti_port("vendor-docker")
+    monkeypatch.setattr(pitch_cli, "_vendor_docker_smoke_check", lambda: (True, f"Vendor CRC is reachable on 127.0.0.1:{crc_port}."))
 
     assert main(["docker", "up"]) == 0
     command = captured["command"]
@@ -1334,7 +1372,8 @@ def test_docker_restart_runs_down_then_up_and_smoke(monkeypatch, tmp_path) -> No
         return _Result(0)
 
     monkeypatch.setattr(pitch_cli.subprocess, "run", _fake_run)
-    monkeypatch.setattr(pitch_cli, "_vendor_docker_smoke_check", lambda: (True, "Vendor CRC is reachable on 127.0.0.1:8989."))
+    crc_port = pitch_ports.route_rti_port("vendor-docker")
+    monkeypatch.setattr(pitch_cli, "_vendor_docker_smoke_check", lambda: (True, f"Vendor CRC is reachable on 127.0.0.1:{crc_port}."))
 
     assert main(["docker", "restart"]) == 0
     assert captured[0][6:] == ["down"]
@@ -1343,17 +1382,18 @@ def test_docker_restart_runs_down_then_up_and_smoke(monkeypatch, tmp_path) -> No
 
 def test_docker_smoke_reports_reachability(monkeypatch, capsys) -> None:
     captured = {}
+    crc_port = pitch_ports.route_rti_port("vendor-docker")
 
     def _fake_smoke_check(*, timeout_seconds=60.0, interval_seconds=1.0):
         captured["timeout_seconds"] = timeout_seconds
         captured["interval_seconds"] = interval_seconds
-        return True, "Vendor CRC is reachable on 127.0.0.1:8989."
+        return True, f"Vendor CRC is reachable on 127.0.0.1:{crc_port}."
 
     monkeypatch.setattr(pitch_cli, "_vendor_docker_smoke_check", _fake_smoke_check)
 
     assert main(["docker", "smoke", "--timeout-seconds", "12.5", "--interval-seconds", "0.25"]) == 0
     captured_out = capsys.readouterr()
-    assert "Vendor CRC is reachable on 127.0.0.1:8989." in captured_out.out
+    assert f"Vendor CRC is reachable on 127.0.0.1:{crc_port}." in captured_out.out
     assert captured["timeout_seconds"] == 12.5
     assert captured["interval_seconds"] == 0.25
 
@@ -1485,17 +1525,21 @@ def test_vendor_docker_smoke_checks_webview_when_enabled(monkeypatch, tmp_path) 
 
     def _fake_webview_check(*, timeout_seconds=10.0):
         calls["webview_timeout"] = timeout_seconds
-        return True, "Vendor Web View is reachable at http://127.0.0.1:8080/webview/."
+        webview_port = pitch_ports.route_webview_port("vendor-docker")
+        return True, f"Vendor Web View is reachable at http://127.0.0.1:{webview_port}/webview/."
 
     monkeypatch.setattr(pitch_cli, "_vendor_docker_wait_for_port", _fake_wait_for_port)
     monkeypatch.setattr(pitch_cli, "_vendor_docker_webview_check", _fake_webview_check)
 
     ok, detail = pitch_cli._vendor_docker_smoke_check(timeout_seconds=7.5, interval_seconds=0.25)
 
+    crc_port = pitch_ports.route_rti_port("vendor-docker")
+    webview_port = pitch_ports.route_webview_port("vendor-docker")
     assert ok is True
-    assert "Vendor CRC is reachable on 127.0.0.1:8989." in detail
+    assert f"Vendor CRC is reachable on 127.0.0.1:{crc_port}." in detail
     assert "Vendor Web View is reachable" in detail
-    assert calls["wait_for_port"] == ("127.0.0.1", 8989, 7.5, 0.25)
+    assert f"http://127.0.0.1:{webview_port}/webview/" in detail
+    assert calls["wait_for_port"] == ("127.0.0.1", crc_port, 7.5, 0.25)
     assert calls["webview_timeout"] == 10.0
 
 
@@ -1618,7 +1662,10 @@ def test_start_root_uses_fallback_when_startfile_is_blocked(monkeypatch) -> None
         launched.append((cmd, kwargs))
         return _DummyProcess()
 
-    monkeypatch.setattr(pitch_execution.os, "startfile", _raise_permission_error)
+    monkeypatch.setattr(pitch_execution, "is_windows_platform", lambda: True)
+    monkeypatch.setattr(pitch_execution, "is_macos_platform", lambda: False)
+    monkeypatch.setattr(pitch_execution, "is_wsl_environment", lambda: False)
+    monkeypatch.setattr(pitch_execution.os, "startfile", _raise_permission_error, raising=False)
     monkeypatch.setattr(pitch_execution.subprocess, "Popen", _fake_popen)
 
     assert main(["start", "root"]) == 0
