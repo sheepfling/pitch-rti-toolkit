@@ -109,6 +109,7 @@ pitch start prti1516e
 
 At the `pRTI>` prompt, type `HELP` to confirm the console is alive. Use `QUIT` to exit cleanly.
 You can also run the automated smoke test with `pitch rti smoke`.
+To include that check in the normal verification flow, run `pitch verify --rti-smoke`.
 
 ## Pitch Free-Download Form
 

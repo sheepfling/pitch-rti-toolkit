@@ -12,6 +12,25 @@ def test_verify_passes_for_source_lite_bundle() -> None:
     assert main(["verify"]) == 0
 
 
+def test_verify_can_include_the_rti_smoke_test(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(pitch_cli, "_discover_installed_runtime_launcher", lambda component_key: Path(r"C:\Program Files\prti1516e\bin\pRTI1516e-nogui.bat") if component_key == "prti1516e" else None)
+    monkeypatch.setattr(pitch_cli, "_run_rti_smoke_test", lambda: 0)
+
+    assert main(["verify", "--rti-smoke"]) == 0
+    captured = capsys.readouterr()
+    assert "Verification passed." in captured.out
+
+
+def test_verify_skips_the_rti_smoke_test_when_not_installed(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(pitch_cli, "_discover_installed_runtime_launcher", lambda component_key: None)
+    monkeypatch.setattr(pitch_cli, "_run_rti_smoke_test", lambda: 1)
+
+    assert main(["verify", "--rti-smoke"]) == 0
+    captured = capsys.readouterr()
+    assert "Skipping RTI smoke test" in captured.out
+    assert "Verification passed." in captured.out
+
+
 def test_doctor_runs_without_installed_components(capsys) -> None:
     assert main(["doctor"]) == 0
     captured = capsys.readouterr()

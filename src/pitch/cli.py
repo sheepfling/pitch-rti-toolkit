@@ -578,6 +578,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     verify_parser = subparsers.add_parser("verify", help="Verify the bundle and checksum manifest.")
     verify_parser.add_argument("--quiet", action="store_true", help="Only report failures.")
+    verify_parser.add_argument("--rti-smoke", action="store_true", help="Also run the installed RTI smoke test when available.")
     verify_parser.set_defaults(handler=handle_verify)
 
     probe_parser = subparsers.add_parser("probe", help="Probe configured Pitch RTI ports.")
@@ -1311,6 +1312,12 @@ def handle_verify(args: argparse.Namespace) -> int:
     if failures:
         _failures_to_stderr(failures)
         return 1
+
+    if getattr(args, "rti_smoke", False):
+        if _discover_installed_runtime_launcher("prti1516e") is None:
+            print("Skipping RTI smoke test: no installed Pitch RTI launcher was found.")
+        elif _run_rti_smoke_test() != 0:
+            return 1
 
     if not args.quiet:
         print("Verification passed.")
