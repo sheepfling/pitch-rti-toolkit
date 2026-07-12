@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pitch.cli as pitch_cli
+import pitch.execution as pitch_execution
+import pitch.docker_vendor as pitch_docker_vendor
 import pitch.common as pitch_common
+import pitch.routes as pitch_routes
 import pitch_bootstrap
 from pitch.cli import main
 from pitch_bootstrap import ensure_installer_drop_root, resolve_installer_drop_root, resolve_user_data_root, sha256_file
@@ -136,6 +139,16 @@ def test_bootstrap_uses_the_shared_platform_abstraction(monkeypatch, tmp_path) -
     monkeypatch.setattr(pitch_bootstrap, "is_windows_platform", lambda: True)
     monkeypatch.setattr(pitch_bootstrap, "is_macos_platform", lambda: False)
     assert pitch_bootstrap.load_install_roots(config_path)["prti1516e"] == Path("C:/Pitch/prti")
+
+
+def test_artifact_root_prefers_the_checkout_artifacts_directory(monkeypatch) -> None:
+    monkeypatch.delenv("PITCH_ARTIFACT_ROOT", raising=False)
+    assert pitch_bootstrap.resolve_artifact_root(pitch_bootstrap.ROOT) == pitch_bootstrap.ROOT / "artifacts"
+    assert pitch_bootstrap.install_state_path(pitch_bootstrap.ROOT) == pitch_bootstrap.ROOT / "artifacts" / ".pitch-install-state.json"
+    assert pitch_bootstrap.install_roots_path(pitch_bootstrap.ROOT) == pitch_bootstrap.ROOT / "artifacts" / ".pitch-install-roots.json"
+
+    monkeypatch.setenv("PITCH_ARTIFACT_ROOT", r"C:\tmp\pitch-artifacts")
+    assert pitch_bootstrap.resolve_artifact_root(pitch_bootstrap.ROOT) == Path(r"C:\tmp\pitch-artifacts")
 
 
 def test_installer_drop_root_can_be_overridden_directly(monkeypatch) -> None:
@@ -286,7 +299,7 @@ def test_rti_smoke_starts_the_console_and_reads_help(monkeypatch, capsys, tmp_pa
     assert captured["command"][0:2] == ["cmd.exe", "/c"]
     assert captured["command"][2] == str(launcher)
     assert captured["cwd"] == str(launcher.parent)
-    assert captured["input"] == "HELP\n"
+    assert captured["input"] == "HELP\nQUIT\n"
     assert captured["timeout"] == 30
 
 
@@ -348,6 +361,49 @@ def test_rti_smoke_chat_runs_two_federates(monkeypatch, capsys, tmp_path) -> Non
     assert launched[0].command[0] in {"cmd.exe", str(launcher)}
     assert "pitch-smoke-alpha" in launched[0]._input
     assert "pitch-smoke-bravo" in launched[1]._input
+
+
+def test_rti_smoke_chat_uses_cmd_on_wsl_for_bat_launchers(monkeypatch, capsys, tmp_path) -> None:
+    launcher = tmp_path / "chat-java-hla4" / "chat-java-hla4.bat"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("@echo off\n", encoding="utf-8")
+
+    monkeypatch.setattr(pitch_execution, "is_wsl_environment", lambda: True)
+    monkeypatch.setattr(
+        pitch_cli,
+        "_discover_chat_sample_launcher",
+        lambda variant=None: ("java-hla4", launcher) if variant in {None, "auto", "java-hla4", "java-hla4-fedpro", "cpp-hla4"} else None,
+    )
+
+    launched = []
+
+    class _Process:
+        def __init__(self, command, cwd=None, stdin=None, stdout=None, stderr=None, text=None):
+            self.command = command
+            self.cwd = cwd
+            self.returncode = 0
+            self._input = ""
+
+        def communicate(self, input=None, timeout=None):
+            self._input = input or ""
+            return (
+                "Type messages you want to send.\n> \n",
+                "",
+            )
+
+        def kill(self):
+            return None
+
+    def _fake_popen(command, cwd=None, stdin=None, stdout=None, stderr=None, text=None):
+        proc = _Process(command, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, text=text)
+        launched.append(proc)
+        return proc
+
+    monkeypatch.setattr(pitch_routes.subprocess, "Popen", _fake_popen)
+
+    assert main(["rti", "smoke", "chat"]) == 0
+    capsys.readouterr()
+    assert launched[0].command[0:2] == ["cmd.exe", "/c"]
 
 
 def test_setup_can_stage_from_a_source_folder(monkeypatch, tmp_path, capsys) -> None:
@@ -858,7 +914,7 @@ def test_route_run_wsl_uses_default_distribution_when_not_selected(monkeypatch) 
     monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Windows")
     monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"C:\Windows\System32\wsl.exe" if name == "wsl.exe" else None)
     monkeypatch.setattr(pitch_cli, "_wsl_distribution_names", lambda: ["Ubuntu", "Debian"])
-    monkeypatch.setattr(pitch_cli, "_wsl_default_distribution_name", lambda: "Ubuntu")
+    monkeypatch.setattr(pitch_routes, "wsl_default_distribution_name", lambda: "Ubuntu")
 
     captured = {}
 
@@ -878,7 +934,7 @@ def test_route_run_wsl_uses_default_distribution_when_not_selected(monkeypatch) 
     assert main(["route", "run", "wsl", "verify"]) == 0
     command = captured["command"]
     assert command[0] == "wsl.exe"
-    assert command[1:4] == ["-d", "Ubuntu", "--cd"]
+    assert command[1:6] == ["-d", "Ubuntu", "--cd", "/mnt/c/Users/peanu/GIT/sheepfling/pitch-rti-toolkit", "bash"]
     assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "wsl"
     assert captured["env"]["PITCH_WSL_DISTRO"] == "Ubuntu"
 
@@ -1123,12 +1179,17 @@ def test_settings_set_updates_discovered_crc_settings(monkeypatch, tmp_path, cap
 
 def test_docker_init_copies_vendor_settings_and_enables_hla4_preview(monkeypatch, tmp_path, capsys) -> None:
     user_data_root = tmp_path / "user-data"
+    installer_drop_root = tmp_path / "installers"
     vendor_root = tmp_path / "prti1516e"
     vendor_samples = vendor_root / "samples" / "docker"
+    webview_drop = installer_drop_root / "webviewinstaller64"
+    webview_drop.mkdir(parents=True)
     vendor_samples.mkdir(parents=True)
     (vendor_samples / "prti1516eCRC.settings").write_text("CRC.enableHla4PreviewFeatures=false\nCRC.port=8989\n", encoding="utf-8")
     (vendor_samples / "prti1516eLRC.settings").write_text("LRC.example=true\n", encoding="utf-8")
+    (webview_drop / "webview.war").write_text("dummy webview payload\n", encoding="utf-8")
     monkeypatch.setenv("PITCH_USER_DATA_ROOT", str(user_data_root))
+    monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", str(installer_drop_root))
     monkeypatch.setenv("PITCH_PRTI_HOME", str(vendor_root))
     monkeypatch.setenv("PITCH_VENDOR_DOCKER_ENV_FILE", str(user_data_root / "docker" / "pitch-vendor-compose.env"))
     monkeypatch.setenv("PITCH_VENDOR_DOCKER_SETTINGS_ROOT", str(user_data_root / "docker" / "vendor-settings"))
@@ -1148,7 +1209,7 @@ def test_docker_init_copies_vendor_settings_and_enables_hla4_preview(monkeypatch
     assert env_file.exists()
     assert crc_settings.exists()
     assert lrc_settings.exists()
-    assert (build_root / "webviewinstaller64").exists()
+    assert (build_root / "webviewinstaller64" / "webview.war").exists()
     assert "CRC_ENABLE_HLA4_PREVIEW=1" in env_file.read_text(encoding="utf-8")
     assert "PITCH_PRTI_HOME=" in env_file.read_text(encoding="utf-8")
     assert "PITCH_VENDOR_DOCKER_BUILD_ROOT=" in env_file.read_text(encoding="utf-8")
@@ -1410,7 +1471,11 @@ def test_vendor_docker_smoke_checks_webview_when_enabled(monkeypatch, tmp_path) 
     env_file = tmp_path / "docker" / "pitch-vendor-compose.env"
     env_file.parent.mkdir(parents=True)
     env_file.write_text("DISABLE_WEB_VIEW=\n", encoding="utf-8")
+    build_root = tmp_path / "docker" / "vendor-build"
+    (build_root / "webviewinstaller64").mkdir(parents=True)
+    (build_root / "webviewinstaller64" / "webview.war").write_text("dummy webview payload\n", encoding="utf-8")
     monkeypatch.setenv("PITCH_VENDOR_DOCKER_ENV_FILE", str(env_file))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_BUILD_ROOT", str(build_root))
 
     calls = {}
 
@@ -1432,6 +1497,19 @@ def test_vendor_docker_smoke_checks_webview_when_enabled(monkeypatch, tmp_path) 
     assert "Vendor Web View is reachable" in detail
     assert calls["wait_for_port"] == ("127.0.0.1", 8989, 7.5, 0.25)
     assert calls["webview_timeout"] == 10.0
+
+
+def test_vendor_docker_webview_check_skips_without_payload(monkeypatch, tmp_path) -> None:
+    env_file = tmp_path / "docker" / "pitch-vendor-compose.env"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text("DISABLE_WEB_VIEW=\n", encoding="utf-8")
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_ENV_FILE", str(env_file))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_BUILD_ROOT", str(tmp_path / "docker" / "vendor-build"))
+
+    ok, detail = pitch_docker_vendor.vendor_docker_webview_check()
+
+    assert ok is True
+    assert "no Web View payload was staged" in detail
 
 
 def test_start_prti1516e_prints_the_settings_summary(monkeypatch, capsys) -> None:
@@ -1540,9 +1618,33 @@ def test_start_root_uses_fallback_when_startfile_is_blocked(monkeypatch) -> None
         launched.append((cmd, kwargs))
         return _DummyProcess()
 
-    monkeypatch.setattr(pitch_cli.os, "startfile", _raise_permission_error)
-    monkeypatch.setattr(pitch_cli.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(pitch_execution.os, "startfile", _raise_permission_error)
+    monkeypatch.setattr(pitch_execution.subprocess, "Popen", _fake_popen)
 
     assert main(["start", "root"]) == 0
     assert launched
     assert launched[0][0][0] == "explorer.exe"
+
+
+def test_launcher_command_uses_open_on_macos_for_apps(monkeypatch, tmp_path) -> None:
+    app_bundle = tmp_path / "PitchVisualOMTFree.app"
+    app_bundle.mkdir()
+    monkeypatch.setattr(pitch_execution, "is_macos_platform", lambda: True)
+    monkeypatch.setattr(pitch_execution, "is_windows_platform", lambda: False)
+    monkeypatch.setattr(pitch_execution, "is_wsl_environment", lambda: False)
+
+    assert pitch_execution.launcher_command(app_bundle) == ["open", str(app_bundle)]
+
+
+def test_vendor_docker_compose_command_uses_the_shared_docker_resolver(monkeypatch, tmp_path) -> None:
+    env_file = tmp_path / "docker" / "pitch-vendor-compose.env"
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    env_file.write_text("PITCH_DOCKER_PROFILE=future\n", encoding="utf-8")
+
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_ENV_FILE", str(env_file))
+    monkeypatch.setattr(pitch_docker_vendor, "resolved_docker_command", lambda: "docker.exe")
+
+    command = pitch_docker_vendor.vendor_docker_compose_command("up -d --build pitch-crc")
+
+    assert command[0] == "docker.exe"
+    assert command[1:4] == ["compose", "--env-file", str(env_file)]

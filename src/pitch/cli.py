@@ -6,6 +6,8 @@ import argparse
 import concurrent.futures
 import json
 import os
+import shutil
+import platform
 import shlex
 import re
 import socket
@@ -34,6 +36,7 @@ from pitch_bootstrap import (
     PortTarget,
     parse_ports_config,
     probe_targets,
+    resolve_artifact_root,
     resolve_asset_root,
     ensure_installer_drop_root,
     resolve_installer_drop_root,
@@ -57,18 +60,81 @@ from pitch.common import (
     resolved_docker_command as _resolved_docker_command,
     translate_windows_path as _translate_windows_path,
 )
+from pitch.settings import (
+    apply_requested_hla4_preview,
+    print_crc_settings_summary,
+    read_env_value,
+    set_settings_value,
+    set_crc_setting_everywhere,
+    vendor_crc_settings_path,
+    vendor_docker_status_lines,
+)
+from pitch.execution import launch_program as _launch_program, launcher_command as _launcher_command, open_path as _open_path
+from pitch.docker_vendor import (
+    copy_vendor_docker_context as _copy_vendor_docker_context,
+    copy_vendor_settings as _copy_vendor_settings,
+    vendor_docker_build_root as _vendor_docker_build_root_impl,
+    vendor_docker_compose_command as _vendor_docker_compose_command_impl,
+    vendor_docker_env_path as _vendor_docker_env_path_impl,
+    vendor_docker_install_root as _vendor_docker_install_root_impl,
+    vendor_docker_payload as _vendor_docker_payload_impl,
+    vendor_docker_settings_root as _vendor_docker_settings_root_impl,
+    vendor_docker_status_lines as _vendor_docker_status_lines_impl,
+    vendor_docker_webview_check as _vendor_docker_webview_check_impl,
+    vendor_docker_wait_for_port as _vendor_docker_wait_for_port_impl,
+    run_vendor_docker_compose as _run_vendor_docker_compose_impl,
+    write_docker_env_file as _write_docker_env_file,
+    VENDOR_DOCKER_COMPOSE_PATH as _VENDOR_DOCKER_COMPOSE_PATH,
+)
+from pitch.routes import (
+    chat_launcher_command as _chat_launcher_command,
+    chat_sample_choices as _chat_sample_choices,
+    discovered_chat_sample_launcher as _discover_chat_sample_launcher,
+    discovered_installed_runtime_launcher as _discover_installed_runtime_launcher_impl,
+    discovered_prti_install_root as _discover_prti_install_root,
+    default_route_name as _default_route_name,
+    default_route_reason as _default_route_reason,
+    detected_install_roots as _detected_install_roots_impl,
+    installed_components as _installed_components_impl,
+    installer_search_roots as _installer_search_roots,
+    log_detected_installed as _log_detected_installed,
+    lookup_start_action as _lookup_start_action_impl,
+    normalize_install_roots as _normalize_install_roots,
+    print_active_route_banner as _print_active_route_banner,
+    print_route_visibility as _print_route_visibility,
+    resolve_installer_path as _resolve_installer_path,
+    resolve_wsl_distro_selection as _resolve_wsl_distro_selection,
+    route_available as _route_available,
+    route_context_detail as _route_context_detail,
+    route_context_name as _route_context_name,
+    route_payload_command as _route_payload_command,
+    route_payload_env as _route_payload_env,
+    route_specs as _route_specs,
+    route_summary as _route_summary,
+    run_chat_process as _run_chat_process,
+    run_chat_smoke_test as _run_chat_smoke_test,
+    run_route_command as _run_route_command_impl,
+    install_specs_for_system as _install_specs_for_system_impl,
+    run_start_action as _run_start_action_impl,
+    show_menu as _show_menu_impl,
+    start_actions as _start_actions_impl,
+    translate_route_args_for_wsl as _translate_route_args_for_wsl,
+    wsl_default_distribution_name as _wsl_default_distribution_name,
+    wsl_distribution_names as _wsl_distribution_names,
+)
 
 
 ASSET_ROOT = resolve_asset_root(ROOT)
 USER_DATA_ROOT = resolve_user_data_root()
+ARTIFACT_ROOT = resolve_artifact_root(ROOT)
 INSTALLER_DROP_ROOT = resolve_installer_drop_root()
 DOWNLOAD_CONTACT_FILENAME = ".pitch-download-contact.json"
 DOWNLOAD_CONTACT_TEMPLATE = ASSET_ROOT / "download-contact.example.json"
 DOWNLOAD_SCRIPT_PATH = ASSET_ROOT / "download-autofill.js"
-PREFLIGHT_ARTIFACT_ROOT = USER_DATA_ROOT / "preflight"
+PREFLIGHT_ARTIFACT_ROOT = ARTIFACT_ROOT / "preflight"
 PREFLIGHT_ARTIFACT_FILENAME = "pitch-preflight.json"
 DOCKER_ENV_FILENAME = "pitch-compose.env"
-DOCKER_ENV_ROOT = USER_DATA_ROOT / "docker"
+DOCKER_ENV_ROOT = ARTIFACT_ROOT / "docker"
 DOCKER_ENV_PATH = DOCKER_ENV_ROOT / DOCKER_ENV_FILENAME
 VENDOR_DOCKER_ENV_FILENAME = "pitch-vendor-compose.env"
 VENDOR_DOCKER_ENV_PATH = DOCKER_ENV_ROOT / VENDOR_DOCKER_ENV_FILENAME
@@ -89,14 +155,20 @@ CHAT_SAMPLE_VARIANTS = {
     "java-hla4": (
         "chat-java-hla4/chat-java-hla4.bat",
         "chat-java-hla4/chat-java-hla4.cmd",
+        "chat-java-hla4/chat-java-hla4.sh",
+        "chat-java-hla4/chat-java-hla4",
     ),
     "java-hla4-fedpro": (
         "chat-java-hla4-fedpro/chat-java-hla4-fedpro.bat",
         "chat-java-hla4-fedpro/chat-java-hla4-fedpro.cmd",
+        "chat-java-hla4-fedpro/chat-java-hla4-fedpro.sh",
+        "chat-java-hla4-fedpro/chat-java-hla4-fedpro",
     ),
     "cpp-hla4": (
         "chat-cpp-hla4/chat-cpp-hla4_vc140_32.exe",
         "chat-cpp-hla4/chat-cpp-hla4_vc140_64.exe",
+        "chat-cpp-hla4/chat-cpp-hla4.sh",
+        "chat-cpp-hla4/chat-cpp-hla4",
     ),
 }
 DOWNLOAD_CONTACT_DEFAULTS = {
@@ -115,6 +187,22 @@ DOWNLOAD_CONTACT_DEFAULTS = {
     ],
     "subscribe_newsletter": False,
 }
+
+
+def _platform_system() -> str:
+    return platform.system()
+
+
+def _is_windows_platform() -> bool:
+    return _platform_system() == "Windows"
+
+
+def _is_linux_platform() -> bool:
+    return _platform_system() == "Linux"
+
+
+def _is_macos_platform() -> bool:
+    return _platform_system() == "Darwin"
 PITCH_FREE_DOWNLOAD_URL = "https://www2.pitch.se/pRTI1516e/Releases/v5.5.10-free/SnvHLyNhR6A9ZgoQ/install.asp"
 PITCH_FREE_DOWNLOAD_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -326,27 +414,6 @@ LINUX_RUNTIME_LAUNCHERS = {
         "bin/Start pRTI Service.sh",
     ),
 }
-def _looks_like_windows_path(value: str) -> bool:
-    return bool(re.match(r"^[A-Za-z]:[\\/]", value))
-
-
-def _translate_windows_path(value: str) -> Path:
-    drive = value[0].lower()
-    remainder = value[2:].replace("\\", "/").lstrip("/")
-    return Path(f"/mnt/{drive}/{remainder}")
-
-
-def _coerce_cli_path(value: str) -> Path:
-    if _is_wsl_environment() and _looks_like_windows_path(value):
-        return _translate_windows_path(value)
-    return Path(value).expanduser()
-
-
-def _coerce_env_path(value: str) -> Path:
-    if _is_wsl_environment() and _looks_like_windows_path(value):
-        return _translate_windows_path(value)
-    return Path(value).expanduser()
-
 
 def _route_specs() -> list[RouteSpec]:
     return [
@@ -533,28 +600,15 @@ def _docker_env_path() -> Path:
 
 
 def _vendor_docker_env_path() -> Path:
-    override = os.environ.get("PITCH_VENDOR_DOCKER_ENV_FILE", "").strip()
-    if override:
-        return _coerce_env_path(override)
-    return VENDOR_DOCKER_ENV_PATH
+    return _vendor_docker_env_path_impl()
 
 
 def _vendor_docker_settings_root() -> Path:
-    override = os.environ.get("PITCH_VENDOR_DOCKER_SETTINGS_ROOT", "").strip()
-    if override:
-        return _coerce_env_path(override)
-    return VENDOR_DOCKER_SETTINGS_ROOT
+    return _vendor_docker_settings_root_impl()
 
 
 def _vendor_docker_build_root() -> Path:
-    override = os.environ.get("PITCH_VENDOR_DOCKER_BUILD_ROOT", "").strip()
-    if override:
-        return _coerce_env_path(override)
-    return VENDOR_DOCKER_BUILD_ROOT
-
-
-def _vendor_crc_settings_path() -> Path:
-    return _vendor_docker_settings_root() / "prti1516eCRC.settings"
+    return _vendor_docker_build_root_impl()
 
 
 def _docker_service_name() -> str:
@@ -564,20 +618,8 @@ def _docker_service_name() -> str:
     return "pitch-future"
 
 
-def _resolved_docker_command() -> str | None:
-    if _has_command("docker"):
-        return "docker"
-    if _has_command("docker.exe"):
-        return "docker.exe"
-    return None
-
-
 def _vendor_docker_install_root() -> Path | None:
-    override = os.environ.get("PITCH_PRTI_HOME", "").strip()
-    if override:
-        candidate = _coerce_env_path(override)
-        return candidate if candidate.exists() else None
-    return _discover_prti_install_root()
+    return _vendor_docker_install_root_impl()
 
 
 def _docker_compose_available() -> bool:
@@ -663,43 +705,43 @@ def _docker_preflight_status() -> tuple[str, str, bool]:
         return ("missing", "Could not find the Docker CLI. Install Docker Desktop or Docker Engine first.", False)
 
     try:
-        completed = subprocess.run([docker_command, "info"], check=False, capture_output=True, text=True)
+        compose = subprocess.run([docker_command, "compose", "version"], check=False, capture_output=True, text=True)
     except OSError as exc:
-        return ("missing", f"Could not reach the Docker CLI to verify the daemon: {exc}", False)
+        return ("missing", f"Could not reach the Docker CLI to verify Docker Compose: {exc}", False)
 
-    if completed.returncode == 0:
+    if compose.returncode == 0:
         try:
-            compose = subprocess.run([docker_command, "compose", "version"], check=False, capture_output=True, text=True)
+            completed = subprocess.run([docker_command, "info"], check=False, capture_output=True, text=True)
         except OSError as exc:
-            return ("blocked", f"Docker daemon is reachable, but Docker Compose is unavailable: {exc}", False)
-        if compose.returncode == 0:
+            return ("blocked", f"Docker Compose is reachable, but the Docker daemon is unavailable: {exc}", False)
+        if completed.returncode == 0:
             return ("ok", "Docker daemon and Docker Compose are reachable.", True)
-        compose_output = "\n".join(
+        output = "\n".join(
             part.strip()
-            for part in (getattr(compose, "stdout", "") or "", getattr(compose, "stderr", "") or "")
+            for part in (getattr(completed, "stdout", "") or "", getattr(completed, "stderr", "") or "")
             if part and part.strip()
         )
-        if compose_output:
-            return ("blocked", f"Docker daemon is reachable, but Docker Compose is unavailable.\n{compose_output}", False)
-        return ("blocked", "Docker daemon is reachable, but Docker Compose is unavailable.", False)
+        normalized = output.lower()
+        if "permission denied while trying to connect to the docker api" in normalized or "docker_engine" in normalized:
+            return (
+                "blocked",
+                "Docker Desktop is reachable, but this session cannot access the Docker API pipe.\n"
+                "Try rerunning from an elevated PowerShell session or make sure Docker Desktop is running.",
+                False,
+            )
 
-    output = "\n".join(
+        if output:
+            return ("blocked", f"Docker is installed, but the daemon is not responding cleanly.\n{output}", False)
+        return ("blocked", "Docker is installed, but the daemon is not responding cleanly.", False)
+
+    compose_output = "\n".join(
         part.strip()
-        for part in (getattr(completed, "stdout", "") or "", getattr(completed, "stderr", "") or "")
+        for part in (getattr(compose, "stdout", "") or "", getattr(compose, "stderr", "") or "")
         if part and part.strip()
     )
-    normalized = output.lower()
-    if "permission denied while trying to connect to the docker api" in normalized or "docker_engine" in normalized:
-        return (
-            "blocked",
-            "Docker Desktop is reachable, but this session cannot access the Docker API pipe.\n"
-            "Try rerunning from an elevated PowerShell session or make sure Docker Desktop is running.",
-            False,
-        )
-
-    if output:
-        return ("blocked", f"Docker is installed, but the daemon is not responding cleanly.\n{output}", False)
-    return ("blocked", "Docker is installed, but the daemon is not responding cleanly.", False)
+    if compose_output:
+        return ("blocked", f"Docker daemon is reachable, but Docker Compose is unavailable.\n{compose_output}", False)
+    return ("blocked", "Docker daemon is reachable, but Docker Compose is unavailable.", False)
 
 
 def _run_route_command(route_name: str, pitch_args: list[str], wsl_distro: str | None = None) -> int:
@@ -716,15 +758,17 @@ def _run_route_command(route_name: str, pitch_args: list[str], wsl_distro: str |
     resolved_wsl_distro = wsl_distro
     if route_name == "wsl":
         resolved_wsl_distro = _resolve_wsl_distro_selection(wsl_distro)
+        if resolved_wsl_distro is None:
+            resolved_wsl_distro = _wsl_default_distribution_name()
 
     command = _route_payload_command(pitch_args, route_name, wsl_distro=resolved_wsl_distro)
     route_env = os.environ.copy()
-    route_env.update(_route_payload_env(route_name, wsl_distro=resolved_wsl_distro))
+    route_env.update(_route_payload_env(route_name, wsl_distro=resolved_wsl_distro, docker_env_file=DOCKER_ENV_PATH))
     completed = subprocess.run(command, check=False, env=route_env)
     return int(completed.returncode)
 
 
-def _route_payload_env(route_name: str, wsl_distro: str | None = None) -> dict[str, str]:
+def _route_payload_env(route_name: str, wsl_distro: str | None = None, docker_env_file: Path | None = None) -> dict[str, str]:
     if route_name not in {"wsl", "docker"}:
         return {}
     payload = {"PITCH_ROUTE_CONTEXT": route_name}
@@ -735,7 +779,7 @@ def _route_payload_env(route_name: str, wsl_distro: str | None = None) -> dict[s
         payload["PITCH_USER_DATA_ROOT"] = str(USER_DATA_ROOT)
         payload["PITCH_INSTALLER_DROP_ROOT"] = str(INSTALLER_DROP_ROOT)
         payload["PITCH_PREFLIGHT_ARTIFACT_ROOT"] = str(PREFLIGHT_ARTIFACT_ROOT)
-        payload["PITCH_DOCKER_ENV_FILE"] = str(_docker_env_path())
+        payload["PITCH_DOCKER_ENV_FILE"] = str(docker_env_file or _docker_env_path())
     return payload
 
 
@@ -809,10 +853,10 @@ def build_parser() -> argparse.ArgumentParser:
     config_subparsers = config_parser.add_subparsers(dest="config_command")
     config_parser.set_defaults(handler=handle_config, parser=config_parser)
 
-    config_show_parser = config_subparsers.add_parser("show", help="Show .pitch-install-roots.json or the detected roots.")
+    config_show_parser = config_subparsers.add_parser("show", help="Show artifacts/.pitch-install-roots.json or the detected roots.")
     config_show_parser.set_defaults(handler=handle_config_show)
 
-    config_init_parser = config_subparsers.add_parser("init", help="Generate .pitch-install-roots.json from detected installs.")
+    config_init_parser = config_subparsers.add_parser("init", help="Generate artifacts/.pitch-install-roots.json from detected installs.")
     config_init_parser.add_argument("--force", action="store_true", help="Overwrite an existing install roots config.")
     config_init_parser.set_defaults(handler=handle_config_init)
 
@@ -1091,6 +1135,34 @@ def _load_preflight_report() -> dict[str, object] | None:
 
 def _save_preflight_report(report: dict[str, object]) -> None:
     _write_json_file(_preflight_artifact_path(), report)
+
+
+def _crc_settings_search_roots() -> list[Path]:
+    roots: list[Path] = [
+        USER_DATA_ROOT,
+        INSTALLER_DROP_ROOT,
+        ASSET_ROOT,
+        ROOT,
+        Path.home(),
+    ]
+
+    configured_roots = _configured_install_roots()
+    prti_root = configured_roots.get("prti1516e")
+    if prti_root is not None:
+        roots.extend([prti_root, prti_root.parent])
+
+    launcher = _discover_installed_runtime_launcher("prti1516e")
+    if launcher is not None:
+        roots.extend([launcher.parent, launcher.parent.parent, launcher.parent.parent.parent])
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key not in seen:
+            deduped.append(root)
+            seen.add(key)
+    return deduped
 
 
 def _render_path(repo_root: Path, raw: str | None) -> str | None:
@@ -1451,53 +1523,6 @@ def _write_json_file(path: Path, data: dict[str, object]) -> None:
     Path(temp_name).replace(path)
 
 
-def _open_path(path: Path) -> None:
-    system = _platform_system()
-    if system == "Windows":
-        try:
-            os.startfile(str(path))  # type: ignore[attr-defined]
-            return
-        except (OSError, PermissionError):
-            try:
-                subprocess.Popen(["explorer.exe", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return
-            except OSError as exc:
-                raise RuntimeError(f"Could not open path: {path}") from exc
-
-    opener: list[str] | None = None
-    if system == "Darwin":
-        opener = ["open", str(path)]
-    elif shutil.which("xdg-open"):
-        opener = ["xdg-open", str(path)]
-    elif shutil.which("gio"):
-        opener = ["gio", "open", str(path)]
-
-    if opener is None:
-        raise RuntimeError(f"No folder opener found for: {path}")
-
-    subprocess.Popen(opener, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-
-def _launch_program(path: Path, env: dict[str, str] | None = None) -> None:
-    system = _platform_system()
-    child_env = os.environ.copy()
-    if env:
-        child_env.update(env)
-
-    if system == "Windows":
-        if path.suffix.lower() in {".bat", ".cmd"}:
-            subprocess.Popen(["cmd.exe", "/c", str(path)], cwd=str(path.parent), env=child_env)
-        else:
-            subprocess.Popen([str(path)], cwd=str(path.parent), env=child_env)
-        return
-
-    if path.suffix.lower() == ".sh" or path.name.endswith(".sh"):
-        subprocess.Popen(["bash", str(path)], cwd=str(path.parent), env=child_env)
-        return
-
-    subprocess.Popen([str(path)], cwd=str(path.parent), env=child_env)
-
-
 def _normalize_install_roots(paths: list[Path]) -> list[Path]:
     roots: list[Path] = []
     for path in paths:
@@ -1537,145 +1562,6 @@ def _configured_install_roots() -> dict[str, Path]:
         return load_install_roots(install_roots_path(ROOT))
     except (OSError, ValueError, json.JSONDecodeError):
         return {}
-
-
-def _crc_settings_search_roots() -> list[Path]:
-    roots: list[Path] = [
-        USER_DATA_ROOT,
-        INSTALLER_DROP_ROOT,
-        ASSET_ROOT,
-        ROOT,
-        Path.home(),
-    ]
-
-    configured_roots = _configured_install_roots()
-    prti_root = configured_roots.get("prti1516e")
-    if prti_root is not None:
-        roots.extend([prti_root, prti_root.parent])
-
-    launcher = _discover_installed_runtime_launcher("prti1516e")
-    if launcher is not None:
-        roots.extend([launcher.parent, launcher.parent.parent, launcher.parent.parent.parent])
-
-    deduped: list[Path] = []
-    seen: set[str] = set()
-    for root in roots:
-        key = str(root)
-        if key not in seen:
-            deduped.append(root)
-            seen.add(key)
-    return deduped
-
-
-def _discover_crc_settings_files() -> list[Path]:
-    hits: list[Path] = []
-    seen: set[str] = set()
-    roots = _crc_settings_search_roots()
-
-    for name in CRC_SETTINGS_NAME_HINTS:
-        for hit in discover_file_locations(name, roots, max_depth=4):
-            key = str(hit.resolve()) if hit.exists() else str(hit)
-            if key not in seen:
-                hits.append(hit)
-                seen.add(key)
-
-    if hits:
-        return hits
-
-    for root in roots:
-        if not root.exists() or not root.is_dir():
-            continue
-        for pattern in ("*CRC.settings", "*crc.settings"):
-            try:
-                candidates = root.rglob(pattern)
-            except OSError:
-                continue
-            for candidate in candidates:
-                if not candidate.is_file():
-                    continue
-                key = str(candidate.resolve()) if candidate.exists() else str(candidate)
-                if key not in seen:
-                    hits.append(candidate)
-                    seen.add(key)
-
-    return hits
-
-
-def _parse_settings_entries(path: Path) -> list[tuple[str, str]]:
-    try:
-        content = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
-
-    entries: list[tuple[str, str]] = []
-    for raw_line in content.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or line.startswith(";"):
-            continue
-        if "=" in line:
-            key, value = line.split("=", 1)
-        elif ":" in line:
-            key, value = line.split(":", 1)
-        else:
-            continue
-        key = key.strip()
-        value = value.strip()
-        if key:
-            entries.append((key, value))
-    return entries
-
-
-def _settings_flag_state(entries: list[tuple[str, str]], key_name: str) -> bool | None:
-    normalized_key = key_name.strip().lower()
-    for key, value in entries:
-        if key.strip().lower() != normalized_key:
-            continue
-        normalized_value = value.strip().lower()
-        if normalized_value in {"true", "1", "yes", "on"}:
-            return True
-        if normalized_value in {"false", "0", "no", "off"}:
-            return False
-        return None
-    return None
-
-
-def _print_settings_entries(path: Path, entries: list[tuple[str, str]]) -> None:
-    print(f"CRC settings file: {path}")
-    preview = _settings_flag_state(entries, "CRC.enableHla4PreviewFeatures")
-    if preview is None:
-        print("  HLA 4 Preview features enabled: unknown")
-    elif preview:
-        print("  HLA 4 Preview features enabled: yes")
-    else:
-        print("  HLA 4 Preview features enabled: no")
-
-    if not entries:
-        print("  No key/value settings could be parsed.")
-        return
-
-    print("  All settings:")
-    for key, value in entries:
-        print(f"    {key} = {value}")
-
-
-def _print_crc_settings_summary() -> None:
-    settings_files = _discover_crc_settings_files()
-    if not settings_files:
-        print("CRC settings: no settings file was discovered.")
-        print("  Search roots:")
-        for root in _crc_settings_search_roots():
-            print(f"    - {root}")
-        return
-
-    print("CRC settings discovery:")
-    for settings_file in settings_files:
-        entries = _parse_settings_entries(settings_file)
-        _print_settings_entries(settings_file, entries)
-
-
-def _maybe_print_prti_settings_summary(triggered: bool) -> None:
-    if triggered:
-        _print_crc_settings_summary()
 
 
 def _resolve_launcher_from_root(root: Path, candidates: tuple[str, ...]) -> Path | None:
@@ -1834,9 +1720,56 @@ def _chat_sample_choices() -> list[str]:
 
 
 def _chat_launcher_command(launcher: Path) -> list[str]:
-    if _is_windows_platform() and launcher.suffix.lower() in {".bat", ".cmd"}:
-        return ["cmd.exe", "/c", str(launcher)]
-    return [str(launcher)]
+    return _launcher_command(launcher)
+
+
+def _crc_host_from_log(log_file: Path) -> str | None:
+    try:
+        contents = log_file.read_text(errors="ignore")
+    except OSError:
+        return None
+
+    for line in reversed(contents.splitlines()):
+        host_match = re.search(r"host:([^,;/\s]+)", line)
+        if host_match:
+            return host_match.group(1).strip()
+        if "CRC listening on adapters" in line:
+            adapters = line.split("CRC listening on adapters", 1)[1].strip().lstrip(":").strip()
+            candidate = adapters.split(",", 1)[0].strip()
+            if candidate:
+                return candidate
+    return None
+
+
+def _chat_smoke_host_candidates() -> list[str]:
+    candidates: list[str] = []
+
+    env_host = os.environ.get("PITCH_RTI_SMOKE_HOST")
+    if env_host:
+        candidates.append(env_host.strip())
+
+    install_roots: list[Path] = []
+    if _is_wsl_environment():
+        install_roots.append(Path("/mnt/c/Program Files/prti1516e"))
+
+    install_root = _discover_prti_install_root()
+    if install_root is not None:
+        install_roots.append(install_root)
+
+    for root in install_roots:
+        logs_root = root / "logs"
+        if not logs_root.exists():
+            continue
+        log_files = sorted(logs_root.glob("CRC*.log"), key=lambda path: path.stat().st_mtime, reverse=True)
+        for log_file in log_files:
+            host = _crc_host_from_log(log_file)
+            if host and host not in candidates:
+                candidates.append(host)
+
+    if "localhost" not in candidates:
+        candidates.append("localhost")
+
+    return candidates
 
 
 def _run_chat_process(command: list[str], *, cwd: Path, username: str, host: str, message: str, final_message: str = ".") -> tuple[int, str]:
@@ -1888,11 +1821,12 @@ def _run_chat_smoke_test(variant: str = "auto", *, list_only: bool = False) -> i
     print(f"Chat smoke variant: {chosen_variant}")
     print(f"Chat sample launcher: {launcher}")
     command = _chat_launcher_command(launcher)
-    host = os.environ.get("PITCH_RTI_SMOKE_HOST", "localhost")
+    host = _chat_smoke_host_candidates()[0]
     messages = [
         ("pitch-smoke-alpha", "Hello from pitch-smoke-alpha"),
         ("pitch-smoke-bravo", "Hello from pitch-smoke-bravo"),
     ]
+    print(f"Chat smoke CRC host: {host}")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         futures = [
@@ -1905,8 +1839,12 @@ def _run_chat_smoke_test(variant: str = "auto", *, list_only: bool = False) -> i
     for index, (returncode, output) in enumerate(results, start=1):
         if returncode != 0:
             failures.append(f"chat federate {index} exited with {returncode}")
+            print(f"--- chat federate {index} output ---")
+            print(output.rstrip())
         elif "Type messages you want to send" not in output:
             failures.append(f"chat federate {index} did not reach the chat prompt")
+            print(f"--- chat federate {index} output ---")
+            print(output.rstrip())
 
     if failures:
         print("Pitch chat smoke test failed.", file=sys.stderr)
@@ -1984,10 +1922,7 @@ def _run_rti_smoke_test() -> int:
         print("No installed Pitch RTI launcher was found.", file=sys.stderr)
         return 1
 
-    if _is_windows_platform() and launcher.suffix.lower() in {".bat", ".cmd"}:
-        command = ["cmd.exe", "/c", str(launcher)]
-    else:
-        command = [str(launcher)]
+    command = _launcher_command(launcher)
 
     try:
         process = subprocess.Popen(
@@ -1999,7 +1934,7 @@ def _run_rti_smoke_test() -> int:
             text=True,
         )
         try:
-            output, _ = process.communicate("HELP\n", timeout=30)
+            output, _ = process.communicate("HELP\nQUIT\n", timeout=30)
         except subprocess.TimeoutExpired:
             process.kill()
             output, _ = process.communicate()
@@ -2014,6 +1949,8 @@ def _run_rti_smoke_test() -> int:
 
     _mark_rti_smoke_result(False, str(launcher))
     print("Pitch RTI smoke test failed.", file=sys.stderr)
+    print(f"Launcher: {launcher}", file=sys.stderr)
+    print(f"Return code: {process.returncode}", file=sys.stderr)
     if output:
         print(output, file=sys.stderr)
     return 1
@@ -2308,15 +2245,15 @@ def handle_config_show(args: argparse.Namespace) -> int:
             with config_path.open("r", encoding="utf-8", errors="replace") as handle:
                 payload = json.load(handle)
         except (OSError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"Could not read {config_path.name}: {exc}") from exc
+            raise RuntimeError(f"Could not read {config_path}: {exc}") from exc
 
-        print(f"{config_path.name}:")
+        print(f"{config_path}:")
         _print_install_roots_payload(payload if isinstance(payload, dict) else {"value": payload})
         return 0
 
     detected_roots = _detected_install_roots()
     if not detected_roots:
-        print(f"No {config_path.name} file exists and no Pitch roots were detected.")
+        print(f"No {config_path} file exists and no Pitch roots were detected.")
         return 1
 
     system = _platform_system()
@@ -2333,7 +2270,7 @@ def handle_config_show(args: argparse.Namespace) -> int:
         print(f"Unsupported platform: {system}")
         return 1
 
-    print(f"{config_path.name} does not exist; detected roots would be:")
+    print(f"{config_path} does not exist; detected roots would be:")
     _print_install_roots_payload(payload)
     return 0
 
@@ -2341,7 +2278,7 @@ def handle_config_show(args: argparse.Namespace) -> int:
 def handle_config_init(args: argparse.Namespace) -> int:
     config_path = install_roots_path(ROOT)
     if config_path.exists() and not args.force:
-        print(f"Config already exists: {config_path.name}. Use --force to overwrite.")
+        print(f"Config already exists: {config_path}. Use --force to overwrite.")
         return 0
 
     detected_roots = _detected_install_roots()
@@ -2363,7 +2300,7 @@ def handle_config_init(args: argparse.Namespace) -> int:
         return 1
 
     _write_json_file(config_path, payload)
-    print(f"Wrote {config_path.name}:")
+    print(f"Wrote {config_path}:")
     for key, value in sorted(detected_roots.items()):
         print(f"  {key} -> {value}")
     return 0
@@ -2372,6 +2309,7 @@ def handle_config_init(args: argparse.Namespace) -> int:
 def handle_config_assets(args: argparse.Namespace) -> int:
     print("Writable asset locations:")
     print(f"  user data root: {USER_DATA_ROOT}")
+    print(f"  artifact root: {ARTIFACT_ROOT}")
     print(f"  installer drop root: {resolve_installer_drop_root()}")
     print("Bundle locations:")
     print(f"  asset root: {ASSET_ROOT}")
@@ -2425,174 +2363,73 @@ def handle_assets_verify(args: argparse.Namespace) -> int:
     return 0
 
 
-def _docker_env_payload(profile: str = "future") -> dict[str, str]:
-    normalized = profile.strip().lower() or "future"
-    if normalized not in {"future", "hla4"}:
-        raise ValueError("Docker profile must be either 'future' or 'hla4'.")
-
-    payload = {
-        "PITCH_CONTAINER_WORKDIR": _container_path("workspace"),
-        "PITCH_CONTAINER_ASSET_ROOT": _container_path("workspace", "pitch"),
-        "PITCH_CONTAINER_USER_DATA_ROOT": _container_path("var", "lib", "pitch", "data"),
-        "PITCH_CONTAINER_INSTALLER_DROP_ROOT": _container_path("var", "lib", "pitch", "installers"),
-        "PITCH_CONTAINER_PREFLIGHT_ARTIFACT_ROOT": _container_path("var", "lib", "pitch", "data", "preflight"),
-        "PITCH_ASSET_ROOT": str(ASSET_ROOT),
-        "PITCH_USER_DATA_ROOT": str(USER_DATA_ROOT),
-        "PITCH_INSTALLER_DROP_ROOT": str(INSTALLER_DROP_ROOT),
-        "PITCH_PREFLIGHT_ARTIFACT_ROOT": str(PREFLIGHT_ARTIFACT_ROOT),
-        "PITCH_DOCKER_PROFILE": normalized,
-        "PITCH_RELEASE_CHANNEL": normalized,
-    }
-    return payload
+def _vendor_docker_payload(*, enable_hla4_preview: bool = False) -> dict[str, str]:
+    return _vendor_docker_payload_impl(enable_hla4_preview=enable_hla4_preview)
 
 
-def _write_docker_env_file(path: Path, payload: dict[str, str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lines = ["# Generated by pitch docker init", "# Safe to edit locally; not tracked by git."]
-    for key, value in payload.items():
-        lines.append(f"{key}={value}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+def _discover_crc_settings_files() -> list[Path]:
+    hits: list[Path] = []
+    seen: set[str] = set()
+    roots = _crc_settings_search_roots()
+
+    for name in (
+        "prti1516eCRC.settings",
+        "pRTI1516eCRC.settings",
+        "prti1516e-freeCRC.settings",
+        "PitchCRC.settings",
+        "CRC.settings",
+    ):
+        for hit in discover_file_locations(name, roots, max_depth=4):
+            key = str(hit.resolve()) if hit.exists() else str(hit)
+            if key not in seen:
+                hits.append(hit)
+                seen.add(key)
+
+    if hits:
+        return hits
+
+    for root in roots:
+        if not root.exists() or not root.is_dir():
+            continue
+        for pattern in ("*CRC.settings", "*crc.settings"):
+            try:
+                candidates = root.rglob(pattern)
+            except OSError:
+                continue
+            for candidate in candidates:
+                if not candidate.is_file():
+                    continue
+                key = str(candidate.resolve()) if candidate.exists() else str(candidate)
+                if key not in seen:
+                    hits.append(candidate)
+                    seen.add(key)
+
+    return hits
 
 
-def _container_path(*parts: str) -> str:
-    return str(Path(os.sep, *parts))
+def _print_crc_settings_summary() -> None:
+    print_crc_settings_summary(
+        user_data_root=USER_DATA_ROOT,
+        installer_drop_root=INSTALLER_DROP_ROOT,
+        asset_root=ASSET_ROOT,
+        workspace_root=ROOT,
+        home_root=Path.home(),
+        launcher=_discover_installed_runtime_launcher("prti1516e"),
+    )
 
 
-def _copy_vendor_settings(src_root: Path, dest_root: Path) -> None:
-    dest_root.mkdir(parents=True, exist_ok=True)
-    for filename in ("prti1516eCRC.settings", "prti1516eLRC.settings"):
-        source = src_root / "samples" / "docker" / filename
-        if source.exists():
-            shutil.copy2(source, dest_root / filename)
-
-
-def _copy_vendor_docker_context(src_root: Path, dest_root: Path) -> None:
-    dest_root.mkdir(parents=True, exist_ok=True)
-    for relative_path in ("lib", "samples/docker", "versioninfo.txt"):
-        source = src_root / relative_path
-        destination = dest_root / relative_path
-        if source.is_dir():
-            shutil.copytree(source, destination, dirs_exist_ok=True)
-        elif source.is_file():
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
-    (dest_root / "webviewinstaller64").mkdir(parents=True, exist_ok=True)
-
-
-def _set_settings_value(path: Path, key: str, value: str) -> None:
-    lines: list[str] = []
-    found = False
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        lines = []
-
-    updated: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith(f"{key}="):
-            updated.append(f"{key}={value}")
-            found = True
-        else:
-            updated.append(line)
-    if not found:
-        updated.append(f"{key}={value}")
-    path.write_text("\n".join(updated) + "\n", encoding="utf-8")
-
-
-def _read_settings_value(path: Path, key: str) -> str | None:
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return None
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith(f"{key}="):
-            return stripped.split("=", 1)[1].strip()
-    return None
-
-
-def _discovered_crc_settings_paths() -> list[Path]:
-    return _discover_crc_settings_files()
-
-
-def _set_crc_setting_everywhere(key: str, value: str) -> list[Path]:
-    settings_files = _discovered_crc_settings_paths()
-    if not settings_files:
-        raise FileNotFoundError("No CRC settings file was discovered.")
-
-    updated: list[Path] = []
-    for settings_file in settings_files:
-        _set_settings_value(settings_file, key, value)
-        updated.append(settings_file)
-    return updated
-
-
-def _set_hla4_preview_everywhere(enabled: bool) -> list[Path]:
-    return _set_crc_setting_everywhere("CRC.enableHla4PreviewFeatures", "true" if enabled else "false")
-
-
-def _requested_hla4_preview_state(args: argparse.Namespace) -> bool | None:
-    if getattr(args, "enable_hla4_preview", False):
-        return True
-    if getattr(args, "disable_hla4_preview", False):
-        return False
-    return None
+def _maybe_print_prti_settings_summary(triggered: bool) -> None:
+    if triggered:
+        _print_crc_settings_summary()
 
 
 def _apply_requested_hla4_preview(args: argparse.Namespace, *, context: str, require_settings: bool) -> bool:
-    requested = _requested_hla4_preview_state(args)
-    if requested is None:
-        return False
-
-    try:
-        updated_files = _set_hla4_preview_everywhere(requested)
-    except FileNotFoundError:
-        message = f"{context}: no CRC settings file was discovered; could not update HLA 4 Preview."
-        if require_settings:
-            print(message, file=sys.stderr)
-            return False
-        print(message)
-        return False
-
-    print(f"{context}: set HLA 4 Preview to {'enabled' if requested else 'disabled'} in:")
-    for path in updated_files:
-        print(f"  {path}")
-    return True
-
-
-def _read_env_value(path: Path, key: str) -> str | None:
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return None
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith(f"{key}="):
-            return stripped.split("=", 1)[1].strip()
-    return None
-
-
-def _vendor_docker_payload(*, enable_hla4_preview: bool = False) -> dict[str, str]:
-    install_root = _vendor_docker_install_root()
-    if install_root is None:
-        raise ValueError("Could not find a pRTI installation root. Set PITCH_PRTI_HOME or install pRTI first.")
-
-    payload = {
-        "PITCH_PRTI_HOME": str(install_root),
-        "PITCH_VENDOR_DOCKER_BUILD_ROOT": str(_vendor_docker_build_root()),
-        "PITCH_VENDOR_DOCKER_SETTINGS_ROOT": str(_vendor_docker_settings_root()),
-        "PITCH_VENDOR_DOCKER_ENV_FILE": str(_vendor_docker_env_path()),
-        "PITCH_VENDOR_CONTAINER_WORKDIR": _container_path("opt", "prti1516e"),
-        "PITCH_VENDOR_CONTAINER_SETTINGS_ROOT": _container_path("root", "prti1516e"),
-        "LICENSE_SERVER": os.environ.get("LICENSE_SERVER", "pfls"),
-        "FEDERATE_COUNT": os.environ.get("FEDERATE_COUNT", "5"),
-        "DISABLE_WEB_VIEW": os.environ.get("DISABLE_WEB_VIEW", ""),
-        "JAVA_OPTS": os.environ.get("JAVA_OPTS", "-XX:+UseParallelGC -XX:MaxRAMPercentage=75"),
-    }
-    if enable_hla4_preview:
-        payload["CRC_ENABLE_HLA4_PREVIEW"] = "1"
-    return payload
+    return apply_requested_hla4_preview(
+        args,
+        context=context,
+        settings_files=_discover_crc_settings_files(),
+        require_settings=require_settings,
+    )
 
 
 def handle_docker(args: argparse.Namespace) -> int:
@@ -2624,7 +2461,7 @@ def handle_docker_init(args: argparse.Namespace) -> int:
         _copy_vendor_settings(Path(payload["PITCH_PRTI_HOME"]), settings_root)
         _copy_vendor_docker_context(Path(payload["PITCH_PRTI_HOME"]), build_root)
         if getattr(args, "enable_hla4_preview", False):
-            _set_settings_value(_vendor_crc_settings_path(), "CRC.enableHla4PreviewFeatures", "true")
+            set_settings_value(vendor_crc_settings_path(settings_root), "CRC.enableHla4PreviewFeatures", "true")
         _write_docker_env_file(env_path, payload)
     except (OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
@@ -2639,35 +2476,15 @@ def handle_docker_init(args: argparse.Namespace) -> int:
 
 
 def _vendor_docker_compose_command(action: str) -> list[str]:
-    env_file = _vendor_docker_env_path()
-    if not env_file.exists():
-        raise FileNotFoundError(f"Vendor Docker env file not found: {env_file}. Run `pitch docker init` first.")
-    command = [
-        "docker",
-        "compose",
-        "--env-file",
-        str(env_file),
-        "-f",
-        str(VENDOR_DOCKER_COMPOSE_PATH),
-    ]
-    command.extend(action.split())
-    return command
+    return _vendor_docker_compose_command_impl(action)
 
 
 def _run_vendor_docker_compose(action: str) -> subprocess.CompletedProcess[str]:
-    command = _vendor_docker_compose_command(action)
-    return subprocess.run(command, check=False)
+    return _run_vendor_docker_compose_impl(action)
 
 
 def _vendor_docker_wait_for_port(host: str, port: int, *, timeout_seconds: float = 60.0, interval_seconds: float = 1.0) -> bool:
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=2.0):
-                return True
-        except OSError:
-            time.sleep(interval_seconds)
-    return False
+    return _vendor_docker_wait_for_port_impl(host, port, timeout_seconds=timeout_seconds, interval_seconds=interval_seconds)
 
 
 def _vendor_docker_smoke_check(*, timeout_seconds: float = 60.0, interval_seconds: float = 1.0) -> tuple[bool, str]:
@@ -2683,23 +2500,7 @@ def _vendor_docker_smoke_check(*, timeout_seconds: float = 60.0, interval_second
 
 
 def _vendor_docker_webview_check(*, timeout_seconds: float = 10.0) -> tuple[bool, str]:
-    env_file = _vendor_docker_env_path()
-    disabled = _read_env_value(env_file, "DISABLE_WEB_VIEW")
-    if disabled:
-        return True, "Vendor Web View probe skipped (DISABLE_WEB_VIEW is set)."
-    if not env_file.exists():
-        return False, f"Vendor Docker env file not found: {env_file}. Run `pitch docker init` first."
-
-    url = "http://127.0.0.1:8080/webview/"
-    request = urllib.request.Request(url, method="GET")
-    try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            response.read(1)
-    except urllib.error.HTTPError as exc:
-        return True, f"Vendor Web View responded at {url} (HTTP {exc.code})."
-    except urllib.error.URLError as exc:
-        return False, f"Vendor Web View did not respond at {url}: {exc}"
-    return True, f"Vendor Web View is reachable at {url}."
+    return _vendor_docker_webview_check_impl(timeout_seconds=timeout_seconds)
 
 
 def handle_docker_up(args: argparse.Namespace) -> int:
@@ -2762,25 +2563,6 @@ def handle_docker_logs(args: argparse.Namespace) -> int:
     return int(completed.returncode)
 
 
-def _vendor_docker_status_lines() -> list[str]:
-    lines = [
-        "Vendor Docker setup:",
-        f"  pRTI home: {_vendor_docker_install_root() or 'missing'}",
-        f"  env file: {_vendor_docker_env_path()}",
-        f"  vendor settings overlay: {_vendor_docker_settings_root()}",
-        f"  vendor build context: {_vendor_docker_build_root()}",
-        f"  compose file: {VENDOR_DOCKER_COMPOSE_PATH}",
-    ]
-    initialized = _vendor_docker_env_path().exists() and _vendor_docker_settings_root().exists()
-    lines.append(f"  initialized: {'yes' if initialized else 'no'}")
-    crc_settings_path = _vendor_crc_settings_path()
-    if crc_settings_path.exists():
-        preview = _read_settings_value(crc_settings_path, "CRC.enableHla4PreviewFeatures")
-        if preview is not None:
-            lines.append(f"  HLA 4 Preview: {preview}")
-    return lines
-
-
 def handle_docker_down(args: argparse.Namespace) -> int:
     try:
         completed = _run_vendor_docker_compose("down")
@@ -2791,13 +2573,13 @@ def handle_docker_down(args: argparse.Namespace) -> int:
 
 
 def handle_docker_status(args: argparse.Namespace) -> int:
-    for line in _vendor_docker_status_lines():
+    for line in _vendor_docker_status_lines_impl():
         print(line)
     return 0
 
 
 def handle_docker_inspect(args: argparse.Namespace) -> int:
-    for line in _vendor_docker_status_lines():
+    for line in _vendor_docker_status_lines_impl():
         print(line)
     try:
         completed = _run_vendor_docker_compose("ps --all")
@@ -2917,7 +2699,7 @@ def _stage_assets_for_setup(source_root: str | None, force: bool) -> None:
 
 
 def _download_contact_path() -> Path:
-    return ROOT / DOWNLOAD_CONTACT_FILENAME
+    return ARTIFACT_ROOT / DOWNLOAD_CONTACT_FILENAME
 
 
 def _load_download_contact_defaults() -> dict[str, object]:
@@ -3272,13 +3054,13 @@ def handle_download(args: argparse.Namespace) -> int:
 def handle_download_init(args: argparse.Namespace) -> int:
     config_path = _download_contact_path()
     if config_path.exists() and not args.force:
-        print(f"Config already exists: {config_path.name}. Use --force to overwrite.")
+        print(f"Config already exists: {config_path}. Use --force to overwrite.")
         return 0
 
     payload = _load_download_contact_defaults()
     payload["destination_email"] = args.email
     _write_json_file(config_path, payload)
-    print(f"Wrote {config_path.name} with destination_email={args.email}")
+    print(f"Wrote {config_path} with destination_email={args.email}")
     return 0
 
 
@@ -3390,7 +3172,7 @@ def handle_settings_set(args: argparse.Namespace) -> int:
     key = str(args.key)
     value = str(args.value)
     try:
-        settings_files = _set_crc_setting_everywhere(key, value)
+        settings_files = set_crc_setting_everywhere(_discover_crc_settings_files(), key, value)
     except FileNotFoundError:
         print("CRC settings: no settings file was discovered.", file=sys.stderr)
         return 1
@@ -3478,6 +3260,70 @@ def handle_rti_smoke(args: argparse.Namespace) -> int:
 
 def handle_rti_smoke_chat(args: argparse.Namespace) -> int:
     return _run_chat_smoke_test(getattr(args, "variant", "auto"), list_only=getattr(args, "list", False))
+
+
+def _run_route_command(route_name: str, pitch_args: list[str], wsl_distro: str | None = None) -> int:
+    return _run_route_command_impl(
+        route_name,
+        pitch_args,
+        wsl_distro=wsl_distro,
+        available_wsl_distros=_wsl_distribution_names() if route_name == "wsl" else None,
+        docker_env_file=DOCKER_ENV_PATH,
+        native_runner=main,
+        docker_preflight=_docker_preflight_check,
+    )
+
+
+def _installed_components() -> set[str]:
+    return _installed_components_impl(
+        state_installed_components=_state_installed_components(),
+        system=_platform_system(),
+        windows_system_installed_components=_windows_system_installed_components,
+        linux_system_installed_components=_linux_system_installed_components,
+    )
+
+
+def _detected_install_roots() -> dict[str, Path]:
+    return _detected_install_roots_impl(
+        system=_platform_system(),
+        discover_windows_install_locations_fn=discover_windows_install_locations,
+        discover_linux_install_locations_fn=discover_linux_install_locations,
+    )
+
+
+def _install_specs_for_system(include_legacy_rti: bool) -> list[InstallSpec]:
+    return _install_specs_for_system_impl(_platform_system(), include_legacy_rti)
+
+
+def _discover_installed_runtime_launcher(component_key: str) -> Path | None:
+    return _discover_installed_runtime_launcher_impl(
+        component_key,
+        system=_platform_system(),
+        configured_roots=_configured_install_roots(),
+    )
+
+
+def _start_actions() -> list[StartAction]:
+    return _start_actions_impl(_platform_system(), ASSET_ROOT, ROOT)
+
+
+def _lookup_start_action(target: str) -> StartAction | None:
+    return _lookup_start_action_impl(target, _start_actions())
+
+
+def _show_menu() -> None:
+    return _show_menu_impl(_platform_system(), ASSET_ROOT, ROOT)
+
+
+def _run_start_action(action: StartAction, args: argparse.Namespace) -> None:
+    return _run_start_action_impl(
+        action,
+        args,
+        workspace_root=ROOT,
+        discovered_launcher=_discover_installed_runtime_launcher,
+        open_path=_open_path,
+        launch_program=_launch_program,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

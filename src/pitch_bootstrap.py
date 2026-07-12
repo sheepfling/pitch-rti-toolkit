@@ -9,10 +9,11 @@ import os
 import socket
 import subprocess
 import tempfile
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
+
+from pitch.common import is_macos_platform, is_windows_platform
 
 
 def _workspace_root_from(start: Path) -> Path | None:
@@ -67,20 +68,34 @@ def resolve_user_data_root(app_name: str = APP_NAME) -> Path:
     if override:
         return Path(override).expanduser()
 
-    system = os.name
-    if system == "nt":
+    if is_windows_platform():
         base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
         if base:
             return Path(base).expanduser() / app_name
         return Path.home() / "AppData" / "Local" / app_name
 
-    if sys.platform == "darwin":
+    if is_macos_platform():
         return Path.home() / "Library" / "Application Support" / app_name
 
     base = os.environ.get("XDG_DATA_HOME")
     if base:
         return Path(base).expanduser() / app_name
     return Path.home() / ".local" / "share" / app_name
+
+
+def _is_checkout_root(root: Path) -> bool:
+    return (root / "README.md").exists() and (root / "pitch" / "checksums.sha256").exists()
+
+
+def resolve_artifact_root(workspace_root: Path | None = None, app_name: str = APP_NAME) -> Path:
+    override = os.environ.get("PITCH_ARTIFACT_ROOT")
+    if override:
+        return Path(override).expanduser()
+
+    if workspace_root is not None and _is_checkout_root(workspace_root):
+        return workspace_root / "artifacts"
+
+    return resolve_user_data_root(app_name) / "artifacts"
 
 
 def resolve_installer_drop_root(app_name: str = APP_NAME) -> Path:
@@ -119,11 +134,11 @@ def bundle_fingerprint(root: Path = ROOT) -> str:
 
 
 def install_state_path(root: Path = ROOT) -> Path:
-    return root / INSTALL_STATE_FILENAME
+    return resolve_artifact_root(root) / INSTALL_STATE_FILENAME
 
 
 def install_roots_path(root: Path = ROOT) -> Path:
-    return root / INSTALL_ROOTS_FILENAME
+    return resolve_artifact_root(root) / INSTALL_ROOTS_FILENAME
 
 
 def load_install_state(state_path: Path) -> dict[str, object] | None:
@@ -160,11 +175,12 @@ def load_install_roots(config_path: Path) -> dict[str, Path]:
     if not isinstance(data, dict):
         raise ValueError(f"Invalid install roots config: {config_path}")
 
-    system_key = os.name if os.name == "nt" else "posix"
-    platform_names = {
-        "nt": ("windows", "win32"),
-        "posix": ("linux", "darwin", "mac", "macos"),
-    }.get(system_key, ())
+    if is_windows_platform():
+        platform_names = ("windows", "win32")
+    elif is_macos_platform():
+        platform_names = ("darwin", "mac", "macos")
+    else:
+        platform_names = ("linux", "posix")
 
     platform_data: object = data
     for key in platform_names:
@@ -343,7 +359,7 @@ def _iter_candidate_directories(root: Path, max_depth: int = 2) -> list[Path]:
 
 
 def detect_windows_installed_components(component_patterns: Mapping[str, Sequence[str]]) -> list[str]:
-    if os.name != "nt":
+    if not is_windows_platform():
         return []
 
     try:
@@ -417,7 +433,7 @@ def detect_windows_installed_components(component_patterns: Mapping[str, Sequenc
 
 
 def discover_windows_install_locations(component_patterns: Mapping[str, Sequence[str]]) -> dict[str, list[Path]]:
-    if os.name != "nt":
+    if not is_windows_platform():
         return {}
 
     try:

@@ -29,7 +29,7 @@ pitch start hlastarterkit --port 1516 --probe-ports
 
 If you prefer invoking the module directly, `python -m pitch` still works after installation. On Windows, prefix the same commands with `py -3` when using `python -m pitch`; on Linux, use `python3`.
 
-`setup` checks for an existing install before launching anything. It uses a local state marker in the repo first, then falls back to platform checks:
+`setup` checks for an existing install before launching anything. It uses a local state marker under `artifacts/` first, then falls back to platform checks:
 
 - Windows: registry and install4j uninstall entries
 - Linux: common install locations and launcher files
@@ -37,7 +37,7 @@ If you prefer invoking the module directly, `python -m pitch` still works after 
 When `setup` needs an installer, it looks in the bundled `pitch/` tree first and then searches common user locations like `Downloads/` and cache folders.
 If you install this as a wheel and keep the payload bundle elsewhere, set `PITCH_ASSET_ROOT` to that bundle directory before running `pitch`.
 
-If auto-discovery is ambiguous, create a machine-local override file named `.pitch-install-roots.json` in the repo root. You can generate it with:
+If auto-discovery is ambiguous, create a machine-local override file named `artifacts/.pitch-install-roots.json`. You can generate it with:
 
 ```bash
 pitch config init
@@ -77,6 +77,24 @@ pitch assets import C:\\Users\\you\\Downloads\\pitch
 ```
 
 The command recursively scans the folder for known Pitch installer and support files, then copies them into the cache root so you do not need to keep the original downloads folder around.
+
+## Generated Artifacts
+
+The workspace uses a single `artifacts/` directory for generated state and run outputs when you are working from a checkout. This keeps the repo root tidy and makes the generated files easier to ignore or clean up.
+
+Pitch currently places these items there by default:
+
+- `artifacts/.pitch-install-state.json`
+- `artifacts/.pitch-install-roots.json`
+- `artifacts/preflight/pitch-preflight.json`
+- `artifacts/docker/pitch-compose.env`
+- `artifacts/docker/pitch-vendor-compose.env`
+- `artifacts/docker/vendor-settings/`
+- `artifacts/docker/vendor-build/`
+
+If you are running from an installed wheel or another non-checkout location, Pitch falls back to the per-user data directory and keeps the same `artifacts/` structure there.
+
+You can override the root with `PITCH_ARTIFACT_ROOT` if you need a different writable location.
 
 To stage a folder and run setup in one step:
 
@@ -130,7 +148,9 @@ pitch docker down
 
 `pitch docker init` copies the vendor `prti1516eCRC.settings` and `prti1516eLRC.settings` into a writable overlay under the user data root, stages the Docker build context into a separate writable folder, writes a separate `pitch-vendor-compose.env`, and keeps the original checkout or wheel untouched.
 If you enable HLA 4 Preview, the copied CRC settings file is updated in place so the setting is discoverable before startup.
-When Web View is enabled, `pitch docker up` and `pitch docker smoke` also probe the `http://127.0.0.1:8080/webview/` path after the RTI port is reachable.
+If you drop a `webview.war` file or a `pitchwebview_v*_linux64.sh` installer into `artifacts/installers/` or point `PITCH_INSTALLER_DROP_ROOT` at a custom folder, `pitch docker init` stages it into the vendor build context under `webviewinstaller64/`.
+When that payload is staged, `pitch docker up` and `pitch docker smoke` also probe the `http://127.0.0.1:8080/webview/` path after the RTI port is reachable.
+If no Web View payload is staged, the smoke still passes after the CRC port comes up and reports that the Web View probe was skipped.
 `pitch docker restart` performs a stop/start cycle and reruns the smoke check, while `pitch docker inspect` prints the setup summary and then shows the Compose `ps --all` output for the vendor CRC container.
 The vendor container Compose file lives at `docker/pitch-vendor-compose.yml` and uses the staged vendor build context created by `pitch docker init`.
 
