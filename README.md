@@ -102,6 +102,7 @@ PITCH_DOCKER_PROFILE=hla4 pitch route run docker verify
 On Windows, the CLI now recommends `native` by default and leaves `wsl` and `docker` as explicit opt-in routes.
 `pitch route show` lists WSL distros with indexes, so `--wsl-distro 1` picks the first detected distro and `--wsl-distro Ubuntu` picks by name.
 `pitch setup --route ...` uses the same route choices for the main install flow.
+If you want a tighter approval surface for WSL on Windows, use the repo wrappers at `scripts/pitch-wsl.cmd` or `scripts/pitch-wsl.ps1`, which only invoke `python -m pitch route run wsl` from the repository root.
 
 The Docker route keeps the mutable pieces outside the checkout:
 

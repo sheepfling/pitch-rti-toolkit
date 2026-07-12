@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pitch.cli as pitch_cli
+import pitch.common as pitch_common
 import pitch_bootstrap
 from pitch.cli import main
 from pitch_bootstrap import ensure_installer_drop_root, resolve_installer_drop_root, resolve_user_data_root, sha256_file
@@ -111,6 +112,30 @@ def test_user_data_root_can_be_overridden(monkeypatch) -> None:
     monkeypatch.setenv("PITCH_USER_DATA_ROOT", r"C:\tmp\pitch-user-data")
     assert resolve_user_data_root() == Path(r"C:\tmp\pitch-user-data")
     assert resolve_installer_drop_root() == Path(r"C:\tmp\pitch-user-data\installers")
+
+
+def test_bootstrap_uses_the_shared_platform_abstraction(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(pitch_bootstrap, "is_windows_platform", lambda: True)
+    monkeypatch.setattr(pitch_bootstrap, "is_macos_platform", lambda: False)
+    assert pitch_bootstrap.resolve_user_data_root("PitchApp") == Path.home() / "AppData" / "Local" / "PitchApp"
+
+    monkeypatch.setattr(pitch_bootstrap, "is_windows_platform", lambda: False)
+    monkeypatch.setattr(pitch_bootstrap, "is_macos_platform", lambda: True)
+    assert pitch_bootstrap.resolve_user_data_root("PitchApp") == Path.home() / "Library" / "Application Support" / "PitchApp"
+
+    config_path = tmp_path / ".pitch-install-roots.json"
+    config_path.write_text(
+        '{"windows": {"prti1516e": "C:/Pitch/prti"}, "linux": {"prti1516e": "/opt/pitch"}, "darwin": {"prti1516e": "/Applications/Pitch"}}',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(pitch_bootstrap, "is_windows_platform", lambda: False)
+    monkeypatch.setattr(pitch_bootstrap, "is_macos_platform", lambda: False)
+    assert pitch_bootstrap.load_install_roots(config_path)["prti1516e"] == Path("/opt/pitch")
+
+    monkeypatch.setattr(pitch_bootstrap, "is_windows_platform", lambda: True)
+    monkeypatch.setattr(pitch_bootstrap, "is_macos_platform", lambda: False)
+    assert pitch_bootstrap.load_install_roots(config_path)["prti1516e"] == Path("C:/Pitch/prti")
 
 
 def test_installer_drop_root_can_be_overridden_directly(monkeypatch) -> None:
@@ -833,6 +858,7 @@ def test_route_run_wsl_uses_default_distribution_when_not_selected(monkeypatch) 
     monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Windows")
     monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"C:\Windows\System32\wsl.exe" if name == "wsl.exe" else None)
     monkeypatch.setattr(pitch_cli, "_wsl_distribution_names", lambda: ["Ubuntu", "Debian"])
+    monkeypatch.setattr(pitch_cli, "_wsl_default_distribution_name", lambda: "Ubuntu")
 
     captured = {}
 
@@ -852,9 +878,9 @@ def test_route_run_wsl_uses_default_distribution_when_not_selected(monkeypatch) 
     assert main(["route", "run", "wsl", "verify"]) == 0
     command = captured["command"]
     assert command[0] == "wsl.exe"
-    assert "-d" not in command
+    assert command[1:4] == ["-d", "Ubuntu", "--cd"]
     assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "wsl"
-    assert "PITCH_WSL_DISTRO" not in captured["env"]
+    assert captured["env"]["PITCH_WSL_DISTRO"] == "Ubuntu"
 
 
 def test_route_run_wsl_rejects_unknown_distribution(monkeypatch, capsys) -> None:
@@ -972,6 +998,43 @@ def test_route_run_docker_proceeds_after_a_successful_preflight(monkeypatch, tmp
     assert command[1:5] == ["compose", "--env-file", str(env_file), "-f"]
     assert command[5] == str(pitch_cli.ROOT / "docker" / "compose.yml")
     assert command[6:10] == ["run", "--rm", "--build", "pitch-future"]
+    assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "docker"
+
+
+def test_route_run_docker_accepts_docker_exe_in_wsl(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(pitch_cli, "_is_wsl_environment", lambda: True)
+
+    def _fake_has_command(command: str) -> bool:
+        return command == "docker.exe"
+
+    monkeypatch.setattr(pitch_common, "has_command", _fake_has_command)
+
+    env_file = tmp_path / "docker" / "pitch-compose.env"
+    monkeypatch.setattr(pitch_cli, "DOCKER_ENV_PATH", env_file)
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    env_file.write_text("PITCH_DOCKER_PROFILE=future\n", encoding="utf-8")
+
+    captured = {}
+
+    class _Result:
+        def __init__(self, returncode: int, stdout: str = "", stderr: str = "") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def _fake_run(command, check=False, capture_output=False, text=False, env=None):
+        if command == ["docker.exe", "compose", "version"]:
+            return _Result(0, stdout="Docker Compose version v2.32.0")
+        if command == ["docker.exe", "info"]:
+            return _Result(0, stdout="Client:\n Context: desktop-linux")
+        captured["command"] = command
+        captured["env"] = env
+        return _Result(0)
+
+    monkeypatch.setattr(pitch_cli.subprocess, "run", _fake_run)
+
+    assert main(["route", "run", "docker", "verify"]) == 0
+    assert captured["command"][0] == "docker.exe"
     assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "docker"
 
 
@@ -1132,6 +1195,20 @@ def test_checked_in_docker_configs_do_not_hardcode_container_paths() -> None:
         text = path.read_text(encoding="utf-8")
         for literal in forbidden_literals:
             assert literal not in text, f"{path} still hardcodes {literal}"
+
+
+def test_wsl_wrapper_script_targets_the_route_entrypoint() -> None:
+    ps1_path = pitch_cli.ROOT / "scripts" / "pitch-wsl.ps1"
+    cmd_path = pitch_cli.ROOT / "scripts" / "pitch-wsl.cmd"
+
+    ps1_text = ps1_path.read_text(encoding="utf-8")
+    cmd_text = cmd_path.read_text(encoding="utf-8")
+
+    assert "python -m pitch route run wsl" in ps1_text
+    assert "Resolve-Path" in ps1_text
+    assert "Set-Location" in ps1_text
+    assert "pitch-wsl.ps1" in cmd_text
+    assert "ExecutionPolicy Bypass" in cmd_text
 
 
 def test_docker_up_builds_the_vendor_compose_command(monkeypatch, tmp_path) -> None:
