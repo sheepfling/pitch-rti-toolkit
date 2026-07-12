@@ -429,6 +429,7 @@ def test_route_show_reports_available_routes(monkeypatch, capsys) -> None:
 
     monkeypatch.setattr(pitch_cli.shutil, "which", _fake_which)
     monkeypatch.setattr(pitch_cli, "_wsl_distribution_names", lambda: ["Ubuntu", "Debian"])
+    monkeypatch.setattr(pitch_cli, "_wsl_default_distribution_name", lambda: "Ubuntu")
     monkeypatch.setenv("PITCH_ROUTE_CONTEXT", "wsl")
     monkeypatch.setenv("PITCH_WSL_DISTRO", "Ubuntu")
 
@@ -437,7 +438,8 @@ def test_route_show_reports_available_routes(monkeypatch, capsys) -> None:
     assert "native" in captured.out
     assert "wsl" in captured.out
     assert "docker" in captured.out
-    assert "WSL distros: Ubuntu, Debian" in captured.out
+    assert "WSL distros: 1: Ubuntu, 2: Debian" in captured.out
+    assert "WSL default distro: Ubuntu" in captured.out
     assert "WSL default: the configured default distro unless --wsl-distro is set" in captured.out
     assert "WSL selected: Ubuntu" in captured.out
     assert "recommended: wsl - Windows prefers WSL when it is available." in captured.out
@@ -510,9 +512,34 @@ def test_route_run_wsl_translates_windows_paths(monkeypatch) -> None:
     assert captured["env"]["PITCH_WSL_DISTRO"] == "Ubuntu"
 
 
+def test_route_run_wsl_accepts_distribution_index(monkeypatch) -> None:
+    monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"C:\Windows\System32\wsl.exe" if name == "wsl.exe" else None)
+    monkeypatch.setattr(pitch_cli, "_wsl_distribution_names", lambda: ["Ubuntu", "Debian"])
+
+    captured = {}
+
+    class _Result:
+        returncode = 0
+
+    def _fake_run(command, check=False, env=None):
+        captured["command"] = command
+        captured["env"] = env
+        return _Result()
+
+    monkeypatch.setattr(pitch_cli.subprocess, "run", _fake_run)
+
+    assert main(["route", "run", "--wsl-distro", "2", "wsl", "verify"]) == 0
+    command = captured["command"]
+    assert command[0] == "wsl.exe"
+    assert command[1:4] == ["-d", "Debian", "--cd"]
+    assert captured["env"]["PITCH_WSL_DISTRO"] == "Debian"
+
+
 def test_route_run_wsl_uses_default_distribution_when_not_selected(monkeypatch) -> None:
     monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Windows")
     monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"C:\Windows\System32\wsl.exe" if name == "wsl.exe" else None)
+    monkeypatch.setattr(pitch_cli, "_wsl_distribution_names", lambda: ["Ubuntu", "Debian"])
 
     captured = {}
 
@@ -532,6 +559,16 @@ def test_route_run_wsl_uses_default_distribution_when_not_selected(monkeypatch) 
     assert "-d" not in command
     assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "wsl"
     assert "PITCH_WSL_DISTRO" not in captured["env"]
+
+
+def test_route_run_wsl_rejects_unknown_distribution(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"C:\Windows\System32\wsl.exe" if name == "wsl.exe" else None)
+    monkeypatch.setattr(pitch_cli, "_wsl_distribution_names", lambda: ["Ubuntu", "Debian"])
+
+    assert main(["route", "run", "--wsl-distro", "Fedora", "wsl", "verify"]) == 1
+    captured = capsys.readouterr()
+    assert "WSL distro 'Fedora' is not installed." in captured.err
 
 
 def test_route_run_docker_builds_container_command(monkeypatch) -> None:

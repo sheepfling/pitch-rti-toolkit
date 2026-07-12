@@ -335,7 +335,11 @@ def _print_route_visibility(*, include_wsl_distros: bool = False) -> None:
     if include_wsl_distros:
         distros = _wsl_distribution_names()
         if distros:
-            print(f"  WSL distros: {', '.join(distros)}")
+            numbered = ", ".join(f"{index + 1}: {name}" for index, name in enumerate(distros))
+            print(f"  WSL distros: {numbered}")
+            default_distro = _wsl_default_distribution_name()
+            if default_distro:
+                print(f"  WSL default distro: {default_distro}")
             print("  WSL default: the configured default distro unless --wsl-distro is set")
             selected = _route_context_detail()
             if selected:
@@ -396,6 +400,48 @@ def _wsl_distribution_names() -> list[str]:
     return names
 
 
+def _wsl_default_distribution_name() -> str | None:
+    if platform.system() != "Windows" or shutil.which("wsl.exe") is None:
+        return None
+
+    try:
+        completed = subprocess.run(["wsl.exe", "-l", "-q"], check=False, capture_output=True, text=True)
+    except OSError:
+        return None
+
+    output = getattr(completed, "stdout", "") or ""
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if line.startswith("*"):
+            name = line.lstrip("*").strip()
+            return name or None
+    return None
+
+
+def _resolve_wsl_distro_selection(selection: str | None, available_distros: list[str] | None = None) -> str | None:
+    if selection is None:
+        return None
+
+    raw = selection.strip()
+    if not raw or raw.lower() == "default":
+        return None
+
+    distros = available_distros if available_distros is not None else _wsl_distribution_names()
+    if raw.isdigit():
+        index = int(raw) - 1
+        if 0 <= index < len(distros):
+            return distros[index]
+        raise RuntimeError(f"WSL distro index {raw} is out of range.")
+
+    for distro in distros:
+        if distro.lower() == raw.lower():
+            return distro
+
+    if distros:
+        raise RuntimeError(f"WSL distro '{selection}' is not installed. Available distros: {', '.join(distros)}")
+    return raw
+
+
 def _translate_route_args_for_wsl(pitch_args: list[str]) -> list[str]:
     translated: list[str] = []
     for arg in pitch_args:
@@ -454,18 +500,13 @@ def _run_route_command(route_name: str, pitch_args: list[str], wsl_distro: str |
         print(f"Route '{route_name}' is not available on this machine.", file=sys.stderr)
         return 1
 
-    if route_name == "wsl" and wsl_distro:
-        available_distros = _wsl_distribution_names()
-        if available_distros and wsl_distro not in available_distros:
-            print(
-                f"WSL distro '{wsl_distro}' is not installed. Available distros: {', '.join(available_distros)}",
-                file=sys.stderr,
-            )
-            return 1
+    resolved_wsl_distro = wsl_distro
+    if route_name == "wsl":
+        resolved_wsl_distro = _resolve_wsl_distro_selection(wsl_distro)
 
-    command = _route_payload_command(pitch_args, route_name, wsl_distro=wsl_distro)
+    command = _route_payload_command(pitch_args, route_name, wsl_distro=resolved_wsl_distro)
     route_env = os.environ.copy()
-    route_env.update(_route_payload_env(route_name, wsl_distro=wsl_distro))
+    route_env.update(_route_payload_env(route_name, wsl_distro=resolved_wsl_distro))
     completed = subprocess.run(command, check=False, env=route_env)
     return int(completed.returncode)
 
