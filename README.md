@@ -125,6 +125,7 @@ pitch docker down
 
 `pitch docker init` copies the vendor `prti1516eCRC.settings` and `prti1516eLRC.settings` into a writable overlay under the user data root, stages the Docker build context into a separate writable folder, writes a separate `pitch-vendor-compose.env`, and keeps the original checkout or wheel untouched.
 If you enable HLA 4 Preview, the copied CRC settings file is updated in place so the setting is discoverable before startup.
+When Web View is enabled, `pitch docker up` and `pitch docker smoke` also probe the `http://127.0.0.1:8080/webview/` path after the RTI port is reachable.
 The vendor container Compose file lives at `docker/pitch-vendor-compose.yml` and uses the staged vendor build context created by `pitch docker init`.
 
 To smoke-test the installed RTI, launch the console and ask it for help:

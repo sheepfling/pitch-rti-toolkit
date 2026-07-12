@@ -164,6 +164,35 @@ class RouteSpec:
     description: str
 
 
+def _platform_system() -> str:
+    return platform.system()
+
+
+def _is_windows_platform() -> bool:
+    return _platform_system() == "Windows"
+
+
+def _is_linux_platform() -> bool:
+    return _platform_system() == "Linux"
+
+
+def _is_macos_platform() -> bool:
+    return _platform_system() == "Darwin"
+
+
+def _is_wsl_environment() -> bool:
+    release = platform.release().lower()
+    return bool(
+        os.environ.get("WSL_DISTRO_NAME")
+        or os.environ.get("WSL_INTEROP")
+        or "microsoft" in release
+    )
+
+
+def _has_command(command: str) -> bool:
+    return shutil.which(command) is not None
+
+
 COMMON_REQUIRED_PATHS = [
     "README.md",
     "pitch/checksums.sha256",
@@ -217,6 +246,7 @@ SETUP_WINDOWS_LEGACY_SPEC = InstallSpec(
 SETUP_LINUX_SPECS = [
     InstallSpec("hlastarterkit", "HlaStarterKit", ASSET_ROOT / "linux" / "HlaStarterKit_v1.0.2_linux64.sh"),
     InstallSpec("pitchvisualomt", "PitchVisualOMT", ASSET_ROOT / "linux" / "PitchVisualOMTFree_v2.7.0_linux64.sh"),
+    InstallSpec("prti1516e", "prti1516e-free", ASSET_ROOT / "linux" / "prti1516e-free_5_5_10_linux64.sh"),
 ]
 
 WINDOWS_INSTALLATION_HINTS = {
@@ -273,6 +303,24 @@ LINUX_INSTALLATION_HINTS = {
         "names": ("PitchVisualOMT", "PitchVisualOMTFree", "PitchVisualOMTFree_v2.7.0", "pitch-visual-omt"),
         "launchers": ("bin/PitchVisualOMTFree", "bin/PitchVisualOMTFree.sh", "PitchVisualOMTFree", "PitchVisualOMTFree.sh"),
     },
+    "prti1516e": {
+        "labels": ("prti1516e", "prti1516e-free", "pitch prti"),
+        "roots": (
+            Path.home(),
+            Path.home() / ".local" / "share",
+            Path("/opt"),
+            Path("/usr/local"),
+        ),
+        "names": ("prti1516e", "prti1516e-free", "pRTI1516e", "pRTI1516e-free"),
+        "launchers": (
+            "bin/pRTI1516e-nogui",
+            "bin/pRTI1516e-nogui.sh",
+            "bin/pRTI1516e",
+            "bin/pRTI1516e.sh",
+            "bin/Start pRTI Service",
+            "bin/Start pRTI Service.sh",
+        ),
+    },
 }
 
 LINUX_RUNTIME_LAUNCHERS = {
@@ -287,18 +335,15 @@ LINUX_RUNTIME_LAUNCHERS = {
         "bin/PitchVisualOMTFree.sh",
         "PitchVisualOMTFree",
     ),
+    "prti1516e": (
+        "bin/pRTI1516e-nogui",
+        "bin/pRTI1516e-nogui.sh",
+        "bin/pRTI1516e",
+        "bin/pRTI1516e.sh",
+        "bin/Start pRTI Service",
+        "bin/Start pRTI Service.sh",
+    ),
 }
-
-
-def _is_wsl() -> bool:
-    release = platform.release().lower()
-    return bool(
-        os.environ.get("WSL_DISTRO_NAME")
-        or os.environ.get("WSL_INTEROP")
-        or "microsoft" in release
-    )
-
-
 def _looks_like_windows_path(value: str) -> bool:
     return bool(re.match(r"^[A-Za-z]:[\\/]", value))
 
@@ -310,13 +355,13 @@ def _translate_windows_path(value: str) -> Path:
 
 
 def _coerce_cli_path(value: str) -> Path:
-    if _is_wsl() and _looks_like_windows_path(value):
+    if _is_wsl_environment() and _looks_like_windows_path(value):
         return _translate_windows_path(value)
     return Path(value).expanduser()
 
 
 def _coerce_env_path(value: str) -> Path:
-    if _is_wsl() and _looks_like_windows_path(value):
+    if _is_wsl_environment() and _looks_like_windows_path(value):
         return _translate_windows_path(value)
     return Path(value).expanduser()
 
@@ -333,24 +378,22 @@ def _route_available(route_name: str) -> bool:
     if route_name == "native":
         return True
     if route_name == "wsl":
-        return shutil.which("wsl.exe") is not None
+        return _has_command("wsl.exe")
     if route_name == "docker":
         return _docker_compose_available()
     return False
 
 
 def _default_route_name() -> str:
-    system = platform.system()
-    if system == "Darwin":
+    if _is_macos_platform():
         return "native"
     return "native"
 
 
 def _default_route_reason() -> str:
-    system = platform.system()
-    if system == "Windows":
+    if _is_windows_platform():
         return "Windows now stays on native execution by default."
-    if system == "Darwin":
+    if _is_macos_platform():
         return "macOS stays on native execution by default."
     return "Native execution is the default on this system."
 
@@ -427,7 +470,7 @@ def _quote_posix_args(args: list[str]) -> str:
 
 
 def _wsl_distribution_names() -> list[str]:
-    if shutil.which("wsl.exe") is None:
+    if not _has_command("wsl.exe"):
         return []
 
     try:
@@ -445,7 +488,7 @@ def _wsl_distribution_names() -> list[str]:
 
 
 def _wsl_default_distribution_name() -> str | None:
-    if shutil.which("wsl.exe") is None:
+    if not _has_command("wsl.exe"):
         return None
 
     try:
@@ -548,7 +591,7 @@ def _vendor_docker_install_root() -> Path | None:
 
 
 def _docker_compose_available() -> bool:
-    if shutil.which("docker") is None:
+    if not _has_command("docker"):
         return False
     try:
         completed = subprocess.run(["docker", "compose", "version"], check=False, capture_output=True, text=True)
@@ -621,7 +664,7 @@ def _docker_preflight_check() -> bool:
 
 
 def _docker_preflight_status() -> tuple[str, str, bool]:
-    if shutil.which("docker") is None:
+    if not _has_command("docker"):
         return ("missing", "Could not find the Docker CLI. Install Docker Desktop or Docker Engine first.", False)
 
     try:
@@ -1630,7 +1673,21 @@ def _resolve_launcher_from_root(root: Path, candidates: tuple[str, ...]) -> Path
 
 def _resolve_installer_path(spec: InstallSpec) -> Path | None:
     if spec.key == "prti1516e":
-        for filename in ("prti1516e-free_5_5_10_windows64.exe", "prti1516e-free_5_5_10_windows32.exe"):
+        if platform.system() == "Linux":
+            filenames = [
+                "prti1516e-free_5_5_10_linux64.sh",
+                "prti1516e-free_5_5_10_linux32.sh",
+                "prti1516e-free_5_5_10_windows64.exe",
+                "prti1516e-free_5_5_10_windows32.exe",
+            ]
+        else:
+            filenames = [
+                "prti1516e-free_5_5_10_windows64.exe",
+                "prti1516e-free_5_5_10_windows32.exe",
+                "prti1516e-free_5_5_10_linux64.sh",
+                "prti1516e-free_5_5_10_linux32.sh",
+            ]
+        for filename in filenames:
             hits = discover_file_locations(filename, _installer_search_roots(), max_depth=4)
             if hits:
                 return hits[0]
@@ -1684,6 +1741,7 @@ def _discover_installed_runtime_launcher(component_key: str) -> Path | None:
             {
                 "hlastarterkit": (Path.home(), Path.home() / ".local" / "share", Path("/opt"), Path("/usr/local")),
                 "pitchvisualomt": (Path.home(), Path.home() / ".local" / "share", Path("/opt"), Path("/usr/local")),
+                "prti1516e": (Path.home(), Path.home() / ".local" / "share", Path("/opt"), Path("/usr/local")),
             },
             LINUX_RUNTIME_LAUNCHERS,
         )
@@ -1849,9 +1907,10 @@ def _start_actions() -> list[StartAction]:
         return [
             StartAction("1", "HlaStarterKit", "runtime", ASSET_ROOT / "linux" / "HlaStarterKit_v1.0.2_linux64.sh", "hlastarterkit"),
             StartAction("2", "PitchVisualOMT", "runtime", ASSET_ROOT / "linux" / "PitchVisualOMTFree_v2.7.0_linux64.sh", "pitchvisualomt"),
-            StartAction("3", "Docs", "folder", ASSET_ROOT / "docs", "docs"),
-            StartAction("4", "Plugin", "folder", ASSET_ROOT / "plugin", "plugin"),
-            StartAction("5", "Project Root", "folder", ROOT, "root"),
+            StartAction("3", "prti1516e-free", "runtime", ASSET_ROOT / "linux" / "prti1516e-free_5_5_10_linux64.sh", "prti1516e"),
+            StartAction("4", "Docs", "folder", ASSET_ROOT / "docs", "docs"),
+            StartAction("5", "Plugin", "folder", ASSET_ROOT / "plugin", "plugin"),
+            StartAction("6", "Project Root", "folder", ROOT, "root"),
         ]
     raise RuntimeError(f"Unsupported platform: {system}")
 
@@ -2007,9 +2066,6 @@ def handle_setup(args: argparse.Namespace) -> int:
         print("Continuing with the installers that were found.")
 
     for spec, installer_path in resolved_specs:
-        if spec.key == "prti1516e" and platform.system() != "Windows":
-            continue
-
         print(f"Launching {spec.label} from {installer_path}...")
         run_installer(installer_path, cwd=ROOT, quiet=args.silent_install)
         _mark_component_installed(spec.key, spec.label, "installer", str(installer_path))
@@ -2418,6 +2474,18 @@ def _read_settings_value(path: Path, key: str) -> str | None:
     return None
 
 
+def _read_env_value(path: Path, key: str) -> str | None:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(f"{key}="):
+            return stripped.split("=", 1)[1].strip()
+    return None
+
+
 def _vendor_docker_payload(*, enable_hla4_preview: bool = False) -> dict[str, str]:
     install_root = _vendor_docker_install_root()
     if install_root is None:
@@ -2509,9 +2577,35 @@ def _vendor_docker_wait_for_port(host: str, port: int, *, timeout_seconds: float
 
 
 def _vendor_docker_smoke_check(*, timeout_seconds: float = 60.0, interval_seconds: float = 1.0) -> tuple[bool, str]:
-    if _vendor_docker_wait_for_port("127.0.0.1", 8989, timeout_seconds=timeout_seconds, interval_seconds=interval_seconds):
-        return True, "Vendor CRC is reachable on 127.0.0.1:8989."
-    return False, "Vendor CRC did not become reachable on 127.0.0.1:8989 within the timeout."
+    if not _vendor_docker_wait_for_port("127.0.0.1", 8989, timeout_seconds=timeout_seconds, interval_seconds=interval_seconds):
+        return False, "Vendor CRC did not become reachable on 127.0.0.1:8989 within the timeout."
+
+    messages = ["Vendor CRC is reachable on 127.0.0.1:8989."]
+    webview_ok, webview_detail = _vendor_docker_webview_check(timeout_seconds=10.0)
+    messages.append(webview_detail)
+    if not webview_ok:
+        return False, "\n".join(messages)
+    return True, "\n".join(messages)
+
+
+def _vendor_docker_webview_check(*, timeout_seconds: float = 10.0) -> tuple[bool, str]:
+    env_file = _vendor_docker_env_path()
+    disabled = _read_env_value(env_file, "DISABLE_WEB_VIEW")
+    if disabled:
+        return True, "Vendor Web View probe skipped (DISABLE_WEB_VIEW is set)."
+    if not env_file.exists():
+        return False, f"Vendor Docker env file not found: {env_file}. Run `pitch docker init` first."
+
+    url = "http://127.0.0.1:8080/webview/"
+    request = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            response.read(1)
+    except urllib.error.HTTPError as exc:
+        return True, f"Vendor Web View responded at {url} (HTTP {exc.code})."
+    except urllib.error.URLError as exc:
+        return False, f"Vendor Web View did not respond at {url}: {exc}"
+    return True, f"Vendor Web View is reachable at {url}."
 
 
 def handle_docker_up(args: argparse.Namespace) -> int:

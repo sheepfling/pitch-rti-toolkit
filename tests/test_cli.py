@@ -423,6 +423,7 @@ def test_setup_uses_linux_installers_when_running_on_linux(monkeypatch, tmp_path
     nested_root.mkdir(parents=True)
     (nested_root / "HlaStarterKit_v1.0.2_linux64.sh").write_text("#!/bin/sh\n", encoding="utf-8")
     (nested_root / "PitchVisualOMTFree_v2.7.0_linux64.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    (nested_root / "prti1516e-free_5_5_10_linux64.sh").write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", str(tmp_path / "staged"))
     monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Linux")
 
@@ -441,8 +442,28 @@ def test_setup_uses_linux_installers_when_running_on_linux(monkeypatch, tmp_path
     assert calls == [
         ("HlaStarterKit_v1.0.2_linux64.sh", True),
         ("PitchVisualOMTFree_v2.7.0_linux64.sh", True),
+        ("prti1516e-free_5_5_10_linux64.sh", True),
     ]
     assert "Pitch setup finished." in captured.out
+
+
+def test_linux_start_menu_includes_the_rti(monkeypatch) -> None:
+    monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Linux")
+
+    actions = pitch_cli._start_actions()
+
+    assert [action.alias for action in actions] == ["hlastarterkit", "pitchvisualomt", "prti1516e", "docs", "plugin", "root"]
+
+
+def test_linux_discovers_the_rti_launcher(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Linux")
+    install_root = tmp_path / "prti1516e"
+    launcher = install_root / "bin" / "pRTI1516e-nogui"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(pitch_cli, "_configured_install_roots", lambda: {"prti1516e": install_root})
+
+    assert pitch_cli._discover_installed_runtime_launcher("prti1516e") == launcher
 
 
 def test_download_submit_dry_run_uses_download_contact(monkeypatch, capsys) -> None:
@@ -1131,6 +1152,34 @@ def test_docker_smoke_reports_reachability(monkeypatch, capsys) -> None:
     assert "Vendor CRC is reachable on 127.0.0.1:8989." in captured_out.out
     assert captured["timeout_seconds"] == 12.5
     assert captured["interval_seconds"] == 0.25
+
+
+def test_vendor_docker_smoke_checks_webview_when_enabled(monkeypatch, tmp_path) -> None:
+    env_file = tmp_path / "docker" / "pitch-vendor-compose.env"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text("DISABLE_WEB_VIEW=\n", encoding="utf-8")
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_ENV_FILE", str(env_file))
+
+    calls = {}
+
+    def _fake_wait_for_port(host, port, *, timeout_seconds=60.0, interval_seconds=1.0):
+        calls["wait_for_port"] = (host, port, timeout_seconds, interval_seconds)
+        return True
+
+    def _fake_webview_check(*, timeout_seconds=10.0):
+        calls["webview_timeout"] = timeout_seconds
+        return True, "Vendor Web View is reachable at http://127.0.0.1:8080/webview/."
+
+    monkeypatch.setattr(pitch_cli, "_vendor_docker_wait_for_port", _fake_wait_for_port)
+    monkeypatch.setattr(pitch_cli, "_vendor_docker_webview_check", _fake_webview_check)
+
+    ok, detail = pitch_cli._vendor_docker_smoke_check(timeout_seconds=7.5, interval_seconds=0.25)
+
+    assert ok is True
+    assert "Vendor CRC is reachable on 127.0.0.1:8989." in detail
+    assert "Vendor Web View is reachable" in detail
+    assert calls["wait_for_port"] == ("127.0.0.1", 8989, 7.5, 0.25)
+    assert calls["webview_timeout"] == 10.0
 
 
 def test_start_prti1516e_prints_the_settings_summary(monkeypatch, capsys) -> None:
