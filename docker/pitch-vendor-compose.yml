@@ -1,0 +1,24 @@
+name: pitch-vendor
+
+services:
+  pitch-crc:
+    build:
+      context: "${PITCH_PRTI_HOME}"
+      dockerfile: samples/docker/Dockerfile
+    image: pitch-rti-vendor:5.5.10-free
+    init: true
+    stdin_open: true
+    tty: true
+    working_dir: /opt/prti1516e
+    ports:
+      - "127.0.0.1:8989:8989"
+      - "127.0.0.1:8080:8080"
+    environment:
+      LICENSE_SERVER: "${LICENSE_SERVER:-pfls}"
+      FEDERATE_COUNT: "${FEDERATE_COUNT:-5}"
+      DISABLE_WEB_VIEW: "${DISABLE_WEB_VIEW:-}"
+      JAVA_OPTS: "${JAVA_OPTS:--XX:+UseParallelGC -XX:MaxRAMPercentage=75}"
+    volumes:
+      - type: bind
+        source: "${PITCH_VENDOR_DOCKER_SETTINGS_ROOT}"
+        target: /root/prti1516e

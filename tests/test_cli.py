@@ -680,6 +680,13 @@ def test_route_show_reports_available_routes(monkeypatch, capsys) -> None:
     assert "recommended: native - Windows now stays on native execution by default." in captured.out
 
 
+def test_route_available_recognizes_wsl_from_wsl_shell(monkeypatch) -> None:
+    monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"C:\Windows\System32\wsl.exe" if name == "wsl.exe" else None)
+
+    assert pitch_cli._route_available("wsl") is True
+
+
 def test_default_route_name_prefers_native_on_darwin(monkeypatch) -> None:
     monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"/usr/local/bin/docker" if name == "docker" else None)
@@ -738,7 +745,7 @@ def test_route_run_wsl_translates_windows_paths(monkeypatch) -> None:
     assert command[0] == "wsl.exe"
     assert command[1:4] == ["-d", "Ubuntu", "--cd"]
     assert command[4:6] == ["/mnt/c/Users/peanu/GIT/sheepfling/pitch-rti-toolkit", "bash"]
-    assert "/mnt/c/Users/peanu/Downloads/pitch" in command[-1]
+    assert command[-1] == "python3 -m pitch setup --source /mnt/c/Users/peanu/Downloads/pitch"
     assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "wsl"
     assert captured["env"]["PITCH_WSL_DISTRO"] == "Ubuntu"
 
@@ -987,22 +994,88 @@ def test_settings_show_discovers_hla4_preview_state(monkeypatch, tmp_path, capsy
     assert "CRC.port = 8989" in captured.out
 
 
-def test_docker_init_writes_a_local_env_file(monkeypatch, tmp_path, capsys) -> None:
-    monkeypatch.setenv("PITCH_USER_DATA_ROOT", str(tmp_path / "user-data"))
-    monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", str(tmp_path / "user-data" / "installers"))
-    monkeypatch.setattr(pitch_cli, "USER_DATA_ROOT", tmp_path / "user-data")
-    monkeypatch.setattr(pitch_cli, "INSTALLER_DROP_ROOT", tmp_path / "user-data" / "installers")
-    monkeypatch.setattr(pitch_cli, "PREFLIGHT_ARTIFACT_ROOT", tmp_path / "user-data" / "preflight")
-    monkeypatch.setattr(pitch_cli, "DOCKER_ENV_PATH", tmp_path / "user-data" / "docker" / "pitch-compose.env")
+def test_docker_init_copies_vendor_settings_and_enables_hla4_preview(monkeypatch, tmp_path, capsys) -> None:
+    user_data_root = tmp_path / "user-data"
+    vendor_root = tmp_path / "prti1516e"
+    vendor_samples = vendor_root / "samples" / "docker"
+    vendor_samples.mkdir(parents=True)
+    (vendor_samples / "prti1516eCRC.settings").write_text("CRC.enableHla4PreviewFeatures=false\nCRC.port=8989\n", encoding="utf-8")
+    (vendor_samples / "prti1516eLRC.settings").write_text("LRC.example=true\n", encoding="utf-8")
+    monkeypatch.setenv("PITCH_USER_DATA_ROOT", str(user_data_root))
+    monkeypatch.setenv("PITCH_PRTI_HOME", str(vendor_root))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_ENV_FILE", str(user_data_root / "docker" / "pitch-vendor-compose.env"))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_SETTINGS_ROOT", str(user_data_root / "docker" / "vendor-settings"))
 
-    assert main(["docker", "init", "--profile", "hla4"]) == 0
+    assert main(["docker", "init", "--enable-hla4-preview"]) == 0
     captured = capsys.readouterr()
-    assert "Wrote Docker env file:" in captured.out
-    env_file = tmp_path / "user-data" / "docker" / "pitch-compose.env"
+    assert "Wrote vendor Docker env file:" in captured.out
+    assert "Wrote vendor settings overlay:" in captured.out
+
+    env_file = user_data_root / "docker" / "pitch-vendor-compose.env"
+    settings_root = user_data_root / "docker" / "vendor-settings"
+    crc_settings = settings_root / "prti1516eCRC.settings"
+    lrc_settings = settings_root / "prti1516eLRC.settings"
+
     assert env_file.exists()
-    text = env_file.read_text(encoding="utf-8")
-    assert "PITCH_DOCKER_PROFILE=hla4" in text
-    assert "PITCH_RELEASE_CHANNEL=hla4" in text
+    assert crc_settings.exists()
+    assert lrc_settings.exists()
+    assert "CRC_ENABLE_HLA4_PREVIEW=1" in env_file.read_text(encoding="utf-8")
+    assert "PITCH_PRTI_HOME=" in env_file.read_text(encoding="utf-8")
+    assert "CRC.enableHla4PreviewFeatures=true" in crc_settings.read_text(encoding="utf-8")
+
+
+def test_docker_status_reports_vendor_preview_state(monkeypatch, tmp_path, capsys) -> None:
+    user_data_root = tmp_path / "user-data"
+    vendor_root = tmp_path / "prti1516e"
+    vendor_samples = vendor_root / "samples" / "docker"
+    vendor_samples.mkdir(parents=True)
+    (vendor_samples / "prti1516eCRC.settings").write_text("CRC.enableHla4PreviewFeatures=true\n", encoding="utf-8")
+    (vendor_samples / "prti1516eLRC.settings").write_text("LRC.example=true\n", encoding="utf-8")
+    monkeypatch.setenv("PITCH_USER_DATA_ROOT", str(user_data_root))
+    monkeypatch.setenv("PITCH_PRTI_HOME", str(vendor_root))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_ENV_FILE", str(user_data_root / "docker" / "pitch-vendor-compose.env"))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_SETTINGS_ROOT", str(user_data_root / "docker" / "vendor-settings"))
+
+    assert main(["docker", "init", "--enable-hla4-preview"]) == 0
+    assert main(["docker", "status"]) == 0
+    captured = capsys.readouterr()
+    assert "Vendor Docker setup:" in captured.out
+    assert "initialized: yes" in captured.out
+    assert "HLA 4 Preview: true" in captured.out
+
+
+def test_docker_up_builds_the_vendor_compose_command(monkeypatch, tmp_path) -> None:
+    user_data_root = tmp_path / "user-data"
+    vendor_root = tmp_path / "prti1516e"
+    vendor_samples = vendor_root / "samples" / "docker"
+    vendor_samples.mkdir(parents=True)
+    (vendor_samples / "prti1516eCRC.settings").write_text("CRC.enableHla4PreviewFeatures=false\n", encoding="utf-8")
+    (vendor_samples / "prti1516eLRC.settings").write_text("LRC.example=true\n", encoding="utf-8")
+    monkeypatch.setenv("PITCH_USER_DATA_ROOT", str(user_data_root))
+    monkeypatch.setenv("PITCH_PRTI_HOME", str(vendor_root))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_ENV_FILE", str(user_data_root / "docker" / "pitch-vendor-compose.env"))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_SETTINGS_ROOT", str(user_data_root / "docker" / "vendor-settings"))
+
+    assert main(["docker", "init"]) == 0
+
+    captured = {}
+
+    class _Result:
+        def __init__(self, returncode: int = 0) -> None:
+            self.returncode = returncode
+
+    def _fake_run(command, check=False, capture_output=False, text=False, env=None):
+        captured["command"] = command
+        return _Result(0)
+
+    monkeypatch.setattr(pitch_cli.subprocess, "run", _fake_run)
+
+    assert main(["docker", "up"]) == 0
+    command = captured["command"]
+    assert command[0:4] == ["docker", "compose", "--env-file", str(user_data_root / "docker" / "pitch-vendor-compose.env")]
+    assert command[4] == "-f"
+    assert command[5] == str(pitch_cli.ROOT / "docker" / "pitch-vendor-compose.yml")
+    assert command[6:10] == ["up", "-d", "--build", "pitch-crc"]
 
 
 def test_start_prti1516e_prints_the_settings_summary(monkeypatch, capsys) -> None:

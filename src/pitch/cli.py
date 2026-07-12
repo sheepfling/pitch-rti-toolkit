@@ -57,6 +57,12 @@ PREFLIGHT_ARTIFACT_FILENAME = "pitch-preflight.json"
 DOCKER_ENV_FILENAME = "pitch-compose.env"
 DOCKER_ENV_ROOT = USER_DATA_ROOT / "docker"
 DOCKER_ENV_PATH = DOCKER_ENV_ROOT / DOCKER_ENV_FILENAME
+VENDOR_DOCKER_ENV_FILENAME = "pitch-vendor-compose.env"
+VENDOR_DOCKER_ENV_PATH = DOCKER_ENV_ROOT / VENDOR_DOCKER_ENV_FILENAME
+VENDOR_DOCKER_SETTINGS_ROOT = DOCKER_ENV_ROOT / "vendor-settings"
+VENDOR_CRC_SETTINGS_PATH = VENDOR_DOCKER_SETTINGS_ROOT / "prti1516eCRC.settings"
+VENDOR_LRC_SETTINGS_PATH = VENDOR_DOCKER_SETTINGS_ROOT / "prti1516eLRC.settings"
+VENDOR_DOCKER_COMPOSE_PATH = ROOT / "docker" / "pitch-vendor-compose.yml"
 CRC_SETTINGS_NAME_HINTS = (
     "prti1516eCRC.settings",
     "pRTI1516eCRC.settings",
@@ -312,7 +318,7 @@ def _route_available(route_name: str) -> bool:
     if route_name == "native":
         return True
     if route_name == "wsl":
-        return platform.system() == "Windows" and shutil.which("wsl.exe") is not None
+        return shutil.which("wsl.exe") is not None
     if route_name == "docker":
         return _docker_compose_available()
     return False
@@ -406,7 +412,7 @@ def _quote_posix_args(args: list[str]) -> str:
 
 
 def _wsl_distribution_names() -> list[str]:
-    if platform.system() != "Windows" or shutil.which("wsl.exe") is None:
+    if shutil.which("wsl.exe") is None:
         return []
 
     try:
@@ -424,7 +430,7 @@ def _wsl_distribution_names() -> list[str]:
 
 
 def _wsl_default_distribution_name() -> str | None:
-    if platform.system() != "Windows" or shutil.which("wsl.exe") is None:
+    if shutil.which("wsl.exe") is None:
         return None
 
     try:
@@ -486,11 +492,37 @@ def _docker_env_path() -> Path:
     return DOCKER_ENV_PATH
 
 
+def _vendor_docker_env_path() -> Path:
+    override = os.environ.get("PITCH_VENDOR_DOCKER_ENV_FILE", "").strip()
+    if override:
+        return _coerce_env_path(override)
+    return VENDOR_DOCKER_ENV_PATH
+
+
+def _vendor_docker_settings_root() -> Path:
+    override = os.environ.get("PITCH_VENDOR_DOCKER_SETTINGS_ROOT", "").strip()
+    if override:
+        return _coerce_env_path(override)
+    return VENDOR_DOCKER_SETTINGS_ROOT
+
+
+def _vendor_crc_settings_path() -> Path:
+    return _vendor_docker_settings_root() / "prti1516eCRC.settings"
+
+
 def _docker_service_name() -> str:
     profile = os.environ.get("PITCH_DOCKER_PROFILE", "future").strip().lower()
     if profile == "hla4":
         return "pitch-hla4"
     return "pitch-future"
+
+
+def _vendor_docker_install_root() -> Path | None:
+    override = os.environ.get("PITCH_PRTI_HOME", "").strip()
+    if override:
+        candidate = _coerce_env_path(override)
+        return candidate if candidate.exists() else None
+    return _discover_prti_install_root()
 
 
 def _docker_compose_available() -> bool:
@@ -526,9 +558,8 @@ def _route_payload_command(pitch_args: list[str], route_name: str, wsl_distro: s
         command.extend(pitch_args)
         return command
 
-    install_command = _quote_posix_args(["python3", "-m", "pip", "install", "-e", "."])
     run_command = _quote_posix_args(["python3", "-m", "pitch", *pitch_args]) if pitch_args else _quote_posix_args(["python3", "-m", "pitch"])
-    shell_command = f"{install_command} && {run_command}"
+    shell_command = run_command
     if route_name == "wsl":
         command = ["wsl.exe"]
         if wsl_distro:
@@ -792,10 +823,19 @@ def build_parser() -> argparse.ArgumentParser:
     docker_subparsers = docker_parser.add_subparsers(dest="docker_command")
     docker_parser.set_defaults(handler=handle_docker, parser=docker_parser)
 
-    docker_init_parser = docker_subparsers.add_parser("init", help="Write a local Docker Compose env file.")
-    docker_init_parser.add_argument("--profile", choices=["future", "hla4"], default="future", help="Select the Compose profile to write.")
-    docker_init_parser.add_argument("--force", action="store_true", help="Overwrite an existing env file.")
+    docker_init_parser = docker_subparsers.add_parser("init", help="Write the vendor Docker env file and settings overlay.")
+    docker_init_parser.add_argument("--force", action="store_true", help="Overwrite an existing env file and vendor settings overlay.")
+    docker_init_parser.add_argument("--enable-hla4-preview", action="store_true", help="Enable HLA 4 Preview in the copied CRC settings.")
     docker_init_parser.set_defaults(handler=handle_docker_init)
+
+    docker_up_parser = docker_subparsers.add_parser("up", help="Start the vendor pRTI container with Docker Compose.")
+    docker_up_parser.set_defaults(handler=handle_docker_up)
+
+    docker_down_parser = docker_subparsers.add_parser("down", help="Stop the vendor pRTI container with Docker Compose.")
+    docker_down_parser.set_defaults(handler=handle_docker_down)
+
+    docker_status_parser = docker_subparsers.add_parser("status", help="Show the vendor Docker setup paths.")
+    docker_status_parser.set_defaults(handler=handle_docker_status)
 
     settings_parser = subparsers.add_parser("settings", help="Discover CRC settings files and HLA 4 Preview state.")
     settings_subparsers = settings_parser.add_subparsers(dest="settings_command")
@@ -2244,34 +2284,153 @@ def _write_docker_env_file(path: Path, payload: dict[str, str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _copy_vendor_settings(src_root: Path, dest_root: Path) -> None:
+    dest_root.mkdir(parents=True, exist_ok=True)
+    for filename in ("prti1516eCRC.settings", "prti1516eLRC.settings"):
+        source = src_root / "samples" / "docker" / filename
+        if source.exists():
+            shutil.copy2(source, dest_root / filename)
+
+
+def _set_settings_value(path: Path, key: str, value: str) -> None:
+    lines: list[str] = []
+    found = False
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        lines = []
+
+    updated: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(f"{key}="):
+            updated.append(f"{key}={value}")
+            found = True
+        else:
+            updated.append(line)
+    if not found:
+        updated.append(f"{key}={value}")
+    path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+
+
+def _read_settings_value(path: Path, key: str) -> str | None:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(f"{key}="):
+            return stripped.split("=", 1)[1].strip()
+    return None
+
+
+def _vendor_docker_payload(*, enable_hla4_preview: bool = False) -> dict[str, str]:
+    install_root = _vendor_docker_install_root()
+    if install_root is None:
+        raise ValueError("Could not find a pRTI installation root. Set PITCH_PRTI_HOME or install pRTI first.")
+
+    payload = {
+        "PITCH_PRTI_HOME": str(install_root),
+        "PITCH_VENDOR_DOCKER_SETTINGS_ROOT": str(_vendor_docker_settings_root()),
+        "PITCH_VENDOR_DOCKER_ENV_FILE": str(_vendor_docker_env_path()),
+        "LICENSE_SERVER": os.environ.get("LICENSE_SERVER", "pfls"),
+        "FEDERATE_COUNT": os.environ.get("FEDERATE_COUNT", "5"),
+        "DISABLE_WEB_VIEW": os.environ.get("DISABLE_WEB_VIEW", ""),
+        "JAVA_OPTS": os.environ.get("JAVA_OPTS", "-XX:+UseParallelGC -XX:MaxRAMPercentage=75"),
+    }
+    if enable_hla4_preview:
+        payload["CRC_ENABLE_HLA4_PREVIEW"] = "1"
+    return payload
+
+
 def handle_docker(args: argparse.Namespace) -> int:
     parser = getattr(args, "parser", None)
     if getattr(args, "docker_command", None) is None:
         if parser is not None:
             parser.print_help()
         else:
-            print("Usage: pitch docker init")
+            print("Usage: pitch docker init | pitch docker up | pitch docker down | pitch docker status")
         return 0
     return int(args.handler(args))
 
 
 def handle_docker_init(args: argparse.Namespace) -> int:
-    env_path = _docker_env_path()
-    if env_path.exists() and not args.force:
-        print(f"Docker env file already exists: {env_path}")
+    env_path = _vendor_docker_env_path()
+    settings_root = _vendor_docker_settings_root()
+    if env_path.exists() and settings_root.exists() and not args.force:
+        print(f"Vendor Docker env file already exists: {env_path}")
         print("Use --force to overwrite it.")
         return 0
 
     try:
-        payload = _docker_env_payload(args.profile)
+        payload = _vendor_docker_payload(enable_hla4_preview=getattr(args, "enable_hla4_preview", False))
+        if args.force and env_path.exists():
+            env_path.unlink()
+        _copy_vendor_settings(Path(payload["PITCH_PRTI_HOME"]), settings_root)
+        if getattr(args, "enable_hla4_preview", False):
+            _set_settings_value(_vendor_crc_settings_path(), "CRC.enableHla4PreviewFeatures", "true")
         _write_docker_env_file(env_path, payload)
     except (OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
-    print(f"Wrote Docker env file: {env_path}")
+    print(f"Wrote vendor Docker env file: {env_path}")
+    print(f"Wrote vendor settings overlay: {settings_root}")
     for key, value in payload.items():
         print(f"  {key}={value}")
+    return 0
+
+
+def _vendor_docker_compose_command(action: str) -> list[str]:
+    env_file = _vendor_docker_env_path()
+    if not env_file.exists():
+        raise FileNotFoundError(f"Vendor Docker env file not found: {env_file}. Run `pitch docker init` first.")
+    command = [
+        "docker",
+        "compose",
+        "--env-file",
+        str(env_file),
+        "-f",
+        str(VENDOR_DOCKER_COMPOSE_PATH),
+    ]
+    command.extend(action.split())
+    return command
+
+
+def handle_docker_up(args: argparse.Namespace) -> int:
+    try:
+        command = _vendor_docker_compose_command("up -d --build pitch-crc")
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    completed = subprocess.run(command, check=False)
+    return int(completed.returncode)
+
+
+def handle_docker_down(args: argparse.Namespace) -> int:
+    try:
+        command = _vendor_docker_compose_command("down")
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    completed = subprocess.run(command, check=False)
+    return int(completed.returncode)
+
+
+def handle_docker_status(args: argparse.Namespace) -> int:
+    print("Vendor Docker setup:")
+    print(f"  pRTI home: {_vendor_docker_install_root() or 'missing'}")
+    print(f"  env file: {_vendor_docker_env_path()}")
+    print(f"  vendor settings overlay: {_vendor_docker_settings_root()}")
+    print(f"  compose file: {VENDOR_DOCKER_COMPOSE_PATH}")
+    initialized = _vendor_docker_env_path().exists() and _vendor_docker_settings_root().exists()
+    print(f"  initialized: {'yes' if initialized else 'no'}")
+    crc_settings_path = _vendor_crc_settings_path()
+    if crc_settings_path.exists():
+        preview = _read_settings_value(crc_settings_path, "CRC.enableHla4PreviewFeatures")
+        if preview is not None:
+            print(f"  HLA 4 Preview: {preview}")
     return 0
 
 

@@ -112,6 +112,20 @@ The Docker route keeps the mutable pieces outside the checkout:
 
 The Compose assets live in `docker/compose.yml` and `docker/Dockerfile`.
 
+For the official Pitch container path, the CLI now also understands the vendor `samples/docker` tree that ships with the installed RTI. That flow is meant for running the CRC itself in Docker, not for the generic repo helper container:
+
+```bash
+pitch docker init
+pitch docker init --enable-hla4-preview
+pitch docker status
+pitch docker up
+pitch docker down
+```
+
+`pitch docker init` copies the vendor `prti1516eCRC.settings` and `prti1516eLRC.settings` into a writable overlay under the user data root, writes a separate `pitch-vendor-compose.env`, and keeps the original checkout or wheel untouched.
+If you enable HLA 4 Preview, the copied CRC settings file is updated in place so the setting is discoverable before startup.
+The vendor container Compose file lives at `docker/pitch-vendor-compose.yml` and uses the installed RTI as the build context.
+
 To smoke-test the installed RTI, launch the console and ask it for help:
 
 ```bash
