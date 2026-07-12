@@ -903,6 +903,28 @@ def test_start_shows_active_route_banner(monkeypatch, capsys) -> None:
     assert "Selected route: DOCKER (hla4; Docker Compose containerized execution.)" in captured.out
 
 
+def test_settings_show_discovers_hla4_preview_state(monkeypatch, tmp_path, capsys) -> None:
+    settings_file = tmp_path / "prti1516eCRC.settings"
+    settings_file.write_text(
+        "\n".join(
+            [
+                "CRC.enableHla4PreviewFeatures=true",
+                "CRC.port=8989",
+                "CRC.nickname=CRC",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pitch_cli, "_crc_settings_search_roots", lambda: [tmp_path])
+
+    assert main(["settings", "show"]) == 0
+    captured = capsys.readouterr()
+    assert "CRC settings file:" in captured.out
+    assert "HLA 4 Preview features enabled: yes" in captured.out
+    assert "CRC.port = 8989" in captured.out
+
+
 def test_docker_init_writes_a_local_env_file(monkeypatch, tmp_path, capsys) -> None:
     monkeypatch.setenv("PITCH_USER_DATA_ROOT", str(tmp_path / "user-data"))
     monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", str(tmp_path / "user-data" / "installers"))
@@ -919,6 +941,15 @@ def test_docker_init_writes_a_local_env_file(monkeypatch, tmp_path, capsys) -> N
     text = env_file.read_text(encoding="utf-8")
     assert "PITCH_DOCKER_PROFILE=hla4" in text
     assert "PITCH_RELEASE_CHANNEL=hla4" in text
+
+
+def test_start_prti1516e_prints_the_settings_summary(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(pitch_cli, "_print_crc_settings_summary", lambda: print("CRC settings discovery:"))
+    monkeypatch.setattr(pitch_cli, "_run_start_action", lambda *args, **kwargs: None)
+
+    assert main(["start", "prti1516e"]) == 0
+    captured = capsys.readouterr()
+    assert "CRC settings discovery:" in captured.out
 
 
 def test_setup_route_wsl_dispatches_through_route_runner(monkeypatch) -> None:

@@ -119,6 +119,13 @@ pitch start prti1516e
 ```
 
 At the `pRTI>` prompt, type `HELP` to confirm the console is alive. Use `QUIT` to exit cleanly.
+When the RTI target starts, the CLI now prints the discovered CRC settings summary first, including whether `CRC.enableHla4PreviewFeatures` is enabled.
+To inspect the full discovered settings table without launching the RTI, run:
+
+```bash
+pitch settings show
+```
+
 You can also run the automated smoke test with `pitch rti smoke`.
 To include that check in the normal verification flow, run `pitch verify --rti-smoke`.
 

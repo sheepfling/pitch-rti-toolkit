@@ -56,6 +56,13 @@ PREFLIGHT_ARTIFACT_FILENAME = "pitch-preflight.json"
 DOCKER_ENV_FILENAME = "pitch-compose.env"
 DOCKER_ENV_ROOT = USER_DATA_ROOT / "docker"
 DOCKER_ENV_PATH = DOCKER_ENV_ROOT / DOCKER_ENV_FILENAME
+CRC_SETTINGS_NAME_HINTS = (
+    "prti1516eCRC.settings",
+    "pRTI1516eCRC.settings",
+    "prti1516e-freeCRC.settings",
+    "PitchCRC.settings",
+    "CRC.settings",
+)
 DOWNLOAD_CONTACT_DEFAULTS = {
     "first_name": "John",
     "last_name": "Doe",
@@ -775,6 +782,13 @@ def build_parser() -> argparse.ArgumentParser:
     docker_init_parser.add_argument("--force", action="store_true", help="Overwrite an existing env file.")
     docker_init_parser.set_defaults(handler=handle_docker_init)
 
+    settings_parser = subparsers.add_parser("settings", help="Discover CRC settings files and HLA 4 Preview state.")
+    settings_subparsers = settings_parser.add_subparsers(dest="settings_command")
+    settings_parser.set_defaults(handler=handle_settings, parser=settings_parser)
+
+    settings_show_parser = settings_subparsers.add_parser("show", help="Show the discovered CRC settings and HLA 4 Preview state.")
+    settings_show_parser.set_defaults(handler=handle_settings_show)
+
     rti_parser = subparsers.add_parser("rti", help="Run RTI-specific checks.")
     rti_subparsers = rti_parser.add_subparsers(dest="rti_command")
     rti_parser.set_defaults(handler=handle_rti)
@@ -1317,6 +1331,140 @@ def _configured_install_roots() -> dict[str, Path]:
         return load_install_roots(install_roots_path(ROOT))
     except (OSError, ValueError, json.JSONDecodeError):
         return {}
+
+
+def _crc_settings_search_roots() -> list[Path]:
+    roots: list[Path] = [
+        USER_DATA_ROOT,
+        INSTALLER_DROP_ROOT,
+        ASSET_ROOT,
+        ROOT,
+        Path.home(),
+    ]
+
+    configured_roots = _configured_install_roots()
+    prti_root = configured_roots.get("prti1516e")
+    if prti_root is not None:
+        roots.extend([prti_root, prti_root.parent])
+
+    launcher = _discover_installed_runtime_launcher("prti1516e")
+    if launcher is not None:
+        roots.extend([launcher.parent, launcher.parent.parent, launcher.parent.parent.parent])
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key not in seen:
+            deduped.append(root)
+            seen.add(key)
+    return deduped
+
+
+def _discover_crc_settings_files() -> list[Path]:
+    hits: list[Path] = []
+    seen: set[str] = set()
+    roots = _crc_settings_search_roots()
+
+    for name in CRC_SETTINGS_NAME_HINTS:
+        for hit in discover_file_locations(name, roots, max_depth=4):
+            key = str(hit.resolve()) if hit.exists() else str(hit)
+            if key not in seen:
+                hits.append(hit)
+                seen.add(key)
+
+    if hits:
+        return hits
+
+    for root in roots:
+        if not root.exists() or not root.is_dir():
+            continue
+        for pattern in ("*CRC.settings", "*crc.settings"):
+            try:
+                candidates = root.rglob(pattern)
+            except OSError:
+                continue
+            for candidate in candidates:
+                if not candidate.is_file():
+                    continue
+                key = str(candidate.resolve()) if candidate.exists() else str(candidate)
+                if key not in seen:
+                    hits.append(candidate)
+                    seen.add(key)
+
+    return hits
+
+
+def _parse_settings_entries(path: Path) -> list[tuple[str, str]]:
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+
+    entries: list[tuple[str, str]] = []
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.startswith(";"):
+            continue
+        if "=" in line:
+            key, value = line.split("=", 1)
+        elif ":" in line:
+            key, value = line.split(":", 1)
+        else:
+            continue
+        key = key.strip()
+        value = value.strip()
+        if key:
+            entries.append((key, value))
+    return entries
+
+
+def _settings_flag_state(entries: list[tuple[str, str]], key_name: str) -> bool | None:
+    normalized_key = key_name.strip().lower()
+    for key, value in entries:
+        if key.strip().lower() != normalized_key:
+            continue
+        normalized_value = value.strip().lower()
+        if normalized_value in {"true", "1", "yes", "on"}:
+            return True
+        if normalized_value in {"false", "0", "no", "off"}:
+            return False
+        return None
+    return None
+
+
+def _print_settings_entries(path: Path, entries: list[tuple[str, str]]) -> None:
+    print(f"CRC settings file: {path}")
+    preview = _settings_flag_state(entries, "CRC.enableHla4PreviewFeatures")
+    if preview is None:
+        print("  HLA 4 Preview features enabled: unknown")
+    elif preview:
+        print("  HLA 4 Preview features enabled: yes")
+    else:
+        print("  HLA 4 Preview features enabled: no")
+
+    if not entries:
+        print("  No key/value settings could be parsed.")
+        return
+
+    print("  All settings:")
+    for key, value in entries:
+        print(f"    {key} = {value}")
+
+
+def _print_crc_settings_summary() -> None:
+    settings_files = _discover_crc_settings_files()
+    if not settings_files:
+        print("CRC settings: no settings file was discovered.")
+        print("  Search roots:")
+        for root in _crc_settings_search_roots():
+            print(f"    - {root}")
+        return
+
+    print("CRC settings discovery:")
+    for settings_file in settings_files:
+        entries = _parse_settings_entries(settings_file)
+        _print_settings_entries(settings_file, entries)
 
 
 def _resolve_launcher_from_root(root: Path, candidates: tuple[str, ...]) -> Path | None:
@@ -2519,6 +2667,22 @@ def handle_download_fetch(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_settings(args: argparse.Namespace) -> int:
+    parser = getattr(args, "parser", None)
+    if getattr(args, "settings_command", None) is None:
+        if parser is not None:
+            parser.print_help()
+        else:
+            print("Usage: pitch settings show")
+        return 0
+    return int(args.handler(args))
+
+
+def handle_settings_show(args: argparse.Namespace) -> int:
+    _print_crc_settings_summary()
+    return 0
+
+
 def handle_start(args: argparse.Namespace) -> int:
     _print_active_route_banner()
     target = str(args.target or "menu")
@@ -2544,6 +2708,9 @@ def handle_start(args: argparse.Namespace) -> int:
     action = _lookup_start_action(target)
     if action is None:
         raise RuntimeError("Usage: pitch start [menu|hlastarterkit|pitchvisualomt|prti1516e|docs|plugin|root]")
+
+    if action.alias == "prti1516e":
+        _print_crc_settings_summary()
 
     _run_start_action(action, args)
     if args.probe_ports:
