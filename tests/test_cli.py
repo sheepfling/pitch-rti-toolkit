@@ -532,7 +532,7 @@ def test_download_fetch_shows_active_route_banner(monkeypatch, tmp_path, capsys)
     output_path = tmp_path / "downloads" / "pitch.bin"
     assert main(["download", "fetch", "--url", "https://example.com/files/pitch.bin", "--output", str(output_path)]) == 0
     captured = capsys.readouterr()
-    assert "Selected route: wsl" in captured.out
+    assert "Selected route: WSL (Windows host -> WSL Linux shell.)" in captured.out
 
 
 def test_start_shows_active_route_banner(monkeypatch, capsys) -> None:
@@ -541,7 +541,7 @@ def test_start_shows_active_route_banner(monkeypatch, capsys) -> None:
 
     assert main(["start", "root"]) == 0
     captured = capsys.readouterr()
-    assert "Selected route: docker" in captured.out
+    assert "Selected route: DOCKER (Containerized Linux execution.)" in captured.out
 
 
 def test_setup_route_wsl_dispatches_through_route_runner(monkeypatch) -> None:

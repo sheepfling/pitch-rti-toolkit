@@ -323,7 +323,8 @@ def _route_context_name() -> str | None:
 def _print_active_route_banner() -> None:
     route_name = _route_context_name()
     if route_name in {"wsl", "docker"}:
-        print(f"Selected route: {route_name}")
+        label = route_name.upper()
+        print(f"Selected route: {label} ({_route_summary(route_name)})")
 
 
 def _wsl_command_path(path: Path) -> str:
