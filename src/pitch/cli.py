@@ -6,10 +6,8 @@ import argparse
 import concurrent.futures
 import json
 import os
-import platform
 import shlex
 import re
-import shutil
 import socket
 import subprocess
 import sys
@@ -45,6 +43,19 @@ from pitch_bootstrap import (
     save_install_state,
     verify_manifest,
     verify_paths_exist,
+)
+from pitch.common import (
+    coerce_cli_path as _coerce_cli_path,
+    coerce_env_path as _coerce_env_path,
+    has_command as _has_command,
+    is_linux_platform as _is_linux_platform,
+    is_macos_platform as _is_macos_platform,
+    is_wsl_environment as _is_wsl_environment,
+    is_windows_platform as _is_windows_platform,
+    looks_like_windows_path as _looks_like_windows_path,
+    platform_system as _platform_system,
+    resolved_docker_command as _resolved_docker_command,
+    translate_windows_path as _translate_windows_path,
 )
 
 
@@ -162,35 +173,6 @@ class RouteSpec:
     name: str
     label: str
     description: str
-
-
-def _platform_system() -> str:
-    return platform.system()
-
-
-def _is_windows_platform() -> bool:
-    return _platform_system() == "Windows"
-
-
-def _is_linux_platform() -> bool:
-    return _platform_system() == "Linux"
-
-
-def _is_macos_platform() -> bool:
-    return _platform_system() == "Darwin"
-
-
-def _is_wsl_environment() -> bool:
-    release = platform.release().lower()
-    return bool(
-        os.environ.get("WSL_DISTRO_NAME")
-        or os.environ.get("WSL_INTEROP")
-        or "microsoft" in release
-    )
-
-
-def _has_command(command: str) -> bool:
-    return shutil.which(command) is not None
 
 
 COMMON_REQUIRED_PATHS = [
@@ -582,6 +564,14 @@ def _docker_service_name() -> str:
     return "pitch-future"
 
 
+def _resolved_docker_command() -> str | None:
+    if _has_command("docker"):
+        return "docker"
+    if _has_command("docker.exe"):
+        return "docker.exe"
+    return None
+
+
 def _vendor_docker_install_root() -> Path | None:
     override = os.environ.get("PITCH_PRTI_HOME", "").strip()
     if override:
@@ -591,10 +581,11 @@ def _vendor_docker_install_root() -> Path | None:
 
 
 def _docker_compose_available() -> bool:
-    if not _has_command("docker"):
+    docker_command = _resolved_docker_command()
+    if docker_command is None:
         return False
     try:
-        completed = subprocess.run(["docker", "compose", "version"], check=False, capture_output=True, text=True)
+        completed = subprocess.run([docker_command, "compose", "version"], check=False, capture_output=True, text=True)
     except OSError:
         return False
     return completed.returncode == 0
@@ -607,9 +598,12 @@ def _route_payload_command(pitch_args: list[str], route_name: str, wsl_distro: s
     if route_name == "wsl":
         pitch_args = _translate_route_args_for_wsl(pitch_args)
     if route_name == "docker":
+        docker_command = _resolved_docker_command()
+        if docker_command is None:
+            raise RuntimeError("Could not find the Docker CLI. Install Docker Desktop or Docker Engine first.")
         env_file = _docker_env_path()
         command = [
-            "docker",
+            docker_command,
             "compose",
             "-f",
             str(_docker_compose_file()),
@@ -664,17 +658,18 @@ def _docker_preflight_check() -> bool:
 
 
 def _docker_preflight_status() -> tuple[str, str, bool]:
-    if not _has_command("docker"):
+    docker_command = _resolved_docker_command()
+    if docker_command is None:
         return ("missing", "Could not find the Docker CLI. Install Docker Desktop or Docker Engine first.", False)
 
     try:
-        completed = subprocess.run(["docker", "info"], check=False, capture_output=True, text=True)
+        completed = subprocess.run([docker_command, "info"], check=False, capture_output=True, text=True)
     except OSError as exc:
         return ("missing", f"Could not reach the Docker CLI to verify the daemon: {exc}", False)
 
     if completed.returncode == 0:
         try:
-            compose = subprocess.run(["docker", "compose", "version"], check=False, capture_output=True, text=True)
+            compose = subprocess.run([docker_command, "compose", "version"], check=False, capture_output=True, text=True)
         except OSError as exc:
             return ("blocked", f"Docker daemon is reachable, but Docker Compose is unavailable: {exc}", False)
         if compose.returncode == 0:
@@ -760,6 +755,10 @@ def _build_setup_argv(args: argparse.Namespace, route_name: str = "native") -> l
         argv.extend(["--ports-config", str(args.ports_config)])
     if getattr(args, "source", None):
         argv.extend(["--source", str(args.source)])
+    if getattr(args, "enable_hla4_preview", False):
+        argv.append("--enable-hla4-preview")
+    if getattr(args, "disable_hla4_preview", False):
+        argv.append("--disable-hla4-preview")
     return argv
 
 
@@ -2056,6 +2055,7 @@ def handle_setup(args: argparse.Namespace) -> int:
 
     if not args.force and detected_components >= required_keys:
         print("Pitch already appears installed. Use --force to rerun installers.")
+        _apply_requested_hla4_preview(args, context="setup", require_settings=False)
         _maybe_print_prti_settings_summary("prti1516e" in detected_components)
         if args.probe_ports:
             print("Probing configured ports...")
@@ -2098,6 +2098,8 @@ def handle_setup(args: argparse.Namespace) -> int:
         _mark_component_installed(spec.key, spec.label, "installer", str(installer_path))
         if spec.key == "prti1516e":
             _maybe_print_prti_settings_summary(True)
+
+    _apply_requested_hla4_preview(args, context="setup", require_settings=False)
 
     if args.probe_ports:
         print("Probing configured ports...")
@@ -2429,6 +2431,11 @@ def _docker_env_payload(profile: str = "future") -> dict[str, str]:
         raise ValueError("Docker profile must be either 'future' or 'hla4'.")
 
     payload = {
+        "PITCH_CONTAINER_WORKDIR": _container_path("workspace"),
+        "PITCH_CONTAINER_ASSET_ROOT": _container_path("workspace", "pitch"),
+        "PITCH_CONTAINER_USER_DATA_ROOT": _container_path("var", "lib", "pitch", "data"),
+        "PITCH_CONTAINER_INSTALLER_DROP_ROOT": _container_path("var", "lib", "pitch", "installers"),
+        "PITCH_CONTAINER_PREFLIGHT_ARTIFACT_ROOT": _container_path("var", "lib", "pitch", "data", "preflight"),
         "PITCH_ASSET_ROOT": str(ASSET_ROOT),
         "PITCH_USER_DATA_ROOT": str(USER_DATA_ROOT),
         "PITCH_INSTALLER_DROP_ROOT": str(INSTALLER_DROP_ROOT),
@@ -2445,6 +2452,10 @@ def _write_docker_env_file(path: Path, payload: dict[str, str]) -> None:
     for key, value in payload.items():
         lines.append(f"{key}={value}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _container_path(*parts: str) -> str:
+    return str(Path(os.sep, *parts))
 
 
 def _copy_vendor_settings(src_root: Path, dest_root: Path) -> None:
@@ -2521,6 +2532,35 @@ def _set_hla4_preview_everywhere(enabled: bool) -> list[Path]:
     return _set_crc_setting_everywhere("CRC.enableHla4PreviewFeatures", "true" if enabled else "false")
 
 
+def _requested_hla4_preview_state(args: argparse.Namespace) -> bool | None:
+    if getattr(args, "enable_hla4_preview", False):
+        return True
+    if getattr(args, "disable_hla4_preview", False):
+        return False
+    return None
+
+
+def _apply_requested_hla4_preview(args: argparse.Namespace, *, context: str, require_settings: bool) -> bool:
+    requested = _requested_hla4_preview_state(args)
+    if requested is None:
+        return False
+
+    try:
+        updated_files = _set_hla4_preview_everywhere(requested)
+    except FileNotFoundError:
+        message = f"{context}: no CRC settings file was discovered; could not update HLA 4 Preview."
+        if require_settings:
+            print(message, file=sys.stderr)
+            return False
+        print(message)
+        return False
+
+    print(f"{context}: set HLA 4 Preview to {'enabled' if requested else 'disabled'} in:")
+    for path in updated_files:
+        print(f"  {path}")
+    return True
+
+
 def _read_env_value(path: Path, key: str) -> str | None:
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -2543,6 +2583,8 @@ def _vendor_docker_payload(*, enable_hla4_preview: bool = False) -> dict[str, st
         "PITCH_VENDOR_DOCKER_BUILD_ROOT": str(_vendor_docker_build_root()),
         "PITCH_VENDOR_DOCKER_SETTINGS_ROOT": str(_vendor_docker_settings_root()),
         "PITCH_VENDOR_DOCKER_ENV_FILE": str(_vendor_docker_env_path()),
+        "PITCH_VENDOR_CONTAINER_WORKDIR": _container_path("opt", "prti1516e"),
+        "PITCH_VENDOR_CONTAINER_SETTINGS_ROOT": _container_path("root", "prti1516e"),
         "LICENSE_SERVER": os.environ.get("LICENSE_SERVER", "pfls"),
         "FEDERATE_COUNT": os.environ.get("FEDERATE_COUNT", "5"),
         "DISABLE_WEB_VIEW": os.environ.get("DISABLE_WEB_VIEW", ""),
@@ -3345,15 +3387,13 @@ def handle_settings_show(args: argparse.Namespace) -> int:
 
 
 def handle_settings_set(args: argparse.Namespace) -> int:
-    settings_files = _discover_crc_settings_files()
-    if not settings_files:
-        print("CRC settings: no settings file was discovered.", file=sys.stderr)
-        return 1
-
     key = str(args.key)
     value = str(args.value)
-    for settings_file in settings_files:
-        _set_settings_value(settings_file, key, value)
+    try:
+        settings_files = _set_crc_setting_everywhere(key, value)
+    except FileNotFoundError:
+        print("CRC settings: no settings file was discovered.", file=sys.stderr)
+        return 1
 
     print(f"Updated {len(settings_files)} CRC settings file(s):")
     for settings_file in settings_files:
@@ -3388,6 +3428,7 @@ def handle_start(args: argparse.Namespace) -> int:
         raise RuntimeError("Usage: pitch start [menu|hlastarterkit|pitchvisualomt|prti1516e|docs|plugin|root]")
 
     if action.alias == "prti1516e":
+        _apply_requested_hla4_preview(args, context="start", require_settings=False)
         _print_crc_settings_summary()
 
     _run_start_action(action, args)

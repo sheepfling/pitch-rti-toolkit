@@ -9,7 +9,7 @@ services:
     init: true
     stdin_open: true
     tty: true
-    working_dir: /opt/prti1516e
+    working_dir: "${PITCH_VENDOR_CONTAINER_WORKDIR}"
     ports:
       - "127.0.0.1:8989:8989"
       - "127.0.0.1:8080:8080"
@@ -21,4 +21,4 @@ services:
     volumes:
       - type: bind
         source: "${PITCH_VENDOR_DOCKER_SETTINGS_ROOT}"
-        target: /root/prti1516e
+        target: "${PITCH_VENDOR_CONTAINER_SETTINGS_ROOT}"

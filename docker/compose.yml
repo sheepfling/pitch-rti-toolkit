@@ -1,29 +1,40 @@
 name: pitch-rti-toolkit
 
 x-pitch-env: &pitch-env
-  PITCH_ASSET_ROOT: /workspace/pitch
-  PITCH_USER_DATA_ROOT: /var/lib/pitch/data
-  PITCH_INSTALLER_DROP_ROOT: /var/lib/pitch/installers
-  PITCH_PREFLIGHT_ARTIFACT_ROOT: /var/lib/pitch/data/preflight
+  PITCH_CONTAINER_WORKDIR: ${PITCH_CONTAINER_WORKDIR}
+  PITCH_CONTAINER_ASSET_ROOT: ${PITCH_CONTAINER_ASSET_ROOT}
+  PITCH_CONTAINER_USER_DATA_ROOT: ${PITCH_CONTAINER_USER_DATA_ROOT}
+  PITCH_CONTAINER_INSTALLER_DROP_ROOT: ${PITCH_CONTAINER_INSTALLER_DROP_ROOT}
+  PITCH_CONTAINER_PREFLIGHT_ARTIFACT_ROOT: ${PITCH_CONTAINER_PREFLIGHT_ARTIFACT_ROOT}
+  PITCH_ASSET_ROOT: ${PITCH_CONTAINER_ASSET_ROOT}
+  PITCH_USER_DATA_ROOT: ${PITCH_CONTAINER_USER_DATA_ROOT}
+  PITCH_INSTALLER_DROP_ROOT: ${PITCH_CONTAINER_INSTALLER_DROP_ROOT}
+  PITCH_PREFLIGHT_ARTIFACT_ROOT: ${PITCH_CONTAINER_PREFLIGHT_ARTIFACT_ROOT}
 
 x-pitch-base: &pitch-base
   build:
     context: ..
     dockerfile: docker/Dockerfile
+    args:
+      PITCH_CONTAINER_WORKDIR: ${PITCH_CONTAINER_WORKDIR}
+      PITCH_CONTAINER_ASSET_ROOT: ${PITCH_CONTAINER_ASSET_ROOT}
+      PITCH_CONTAINER_USER_DATA_ROOT: ${PITCH_CONTAINER_USER_DATA_ROOT}
+      PITCH_CONTAINER_INSTALLER_DROP_ROOT: ${PITCH_CONTAINER_INSTALLER_DROP_ROOT}
+      PITCH_CONTAINER_PREFLIGHT_ARTIFACT_ROOT: ${PITCH_CONTAINER_PREFLIGHT_ARTIFACT_ROOT}
   image: pitch-rti-toolkit:5.5.10
   init: true
   stdin_open: true
   tty: true
-  working_dir: /workspace
+  working_dir: ${PITCH_CONTAINER_WORKDIR}
   entrypoint: ["pitch"]
   environment: *pitch-env
   volumes:
     - type: bind
       source: ${PITCH_USER_DATA_ROOT}
-      target: /var/lib/pitch/data
+      target: ${PITCH_CONTAINER_USER_DATA_ROOT}
     - type: bind
       source: ${PITCH_INSTALLER_DROP_ROOT}
-      target: /var/lib/pitch/installers
+      target: ${PITCH_CONTAINER_INSTALLER_DROP_ROOT}
 
 services:
   pitch-future:

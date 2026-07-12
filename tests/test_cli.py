@@ -1046,6 +1046,18 @@ def test_settings_show_discovers_hla4_preview_state(monkeypatch, tmp_path, capsy
     assert "CRC.port = 8989" in captured.out
 
 
+def test_settings_set_updates_discovered_crc_settings(monkeypatch, tmp_path, capsys) -> None:
+    settings_file = tmp_path / "prti1516eCRC.settings"
+    settings_file.write_text("CRC.enableHla4PreviewFeatures=false\nCRC.port=8989\n", encoding="utf-8")
+    monkeypatch.setattr(pitch_cli, "_crc_settings_search_roots", lambda: [tmp_path])
+
+    assert main(["settings", "set", "CRC.enableHla4PreviewFeatures", "true"]) == 0
+    captured = capsys.readouterr()
+    assert "Updated 1 CRC settings file(s):" in captured.out
+    assert "prti1516eCRC.settings" in captured.out
+    assert "CRC.enableHla4PreviewFeatures=true" in settings_file.read_text(encoding="utf-8")
+
+
 def test_docker_init_copies_vendor_settings_and_enables_hla4_preview(monkeypatch, tmp_path, capsys) -> None:
     user_data_root = tmp_path / "user-data"
     vendor_root = tmp_path / "prti1516e"
@@ -1099,6 +1111,27 @@ def test_docker_status_reports_vendor_preview_state(monkeypatch, tmp_path, capsy
     assert "Vendor Docker setup:" in captured.out
     assert "initialized: yes" in captured.out
     assert "HLA 4 Preview: true" in captured.out
+
+
+def test_checked_in_docker_configs_do_not_hardcode_container_paths() -> None:
+    checked_in_files = [
+        pitch_cli.ROOT / "docker" / "Dockerfile",
+        pitch_cli.ROOT / "docker" / "compose.yml",
+        pitch_cli.ROOT / "docker" / "pitch-vendor-compose.yml",
+    ]
+    forbidden_literals = [
+        "/workspace",
+        "/var/lib/pitch/data",
+        "/var/lib/pitch/installers",
+        "/var/lib/pitch/data/preflight",
+        "/opt/prti1516e",
+        "/root/prti1516e",
+    ]
+
+    for path in checked_in_files:
+        text = path.read_text(encoding="utf-8")
+        for literal in forbidden_literals:
+            assert literal not in text, f"{path} still hardcodes {literal}"
 
 
 def test_docker_up_builds_the_vendor_compose_command(monkeypatch, tmp_path) -> None:
@@ -1331,6 +1364,61 @@ def test_start_prti1516e_prints_the_settings_summary(monkeypatch, capsys) -> Non
     assert main(["start", "prti1516e"]) == 0
     captured = capsys.readouterr()
     assert "CRC settings discovery:" in captured.out
+
+
+def test_start_can_enable_hla4_preview_before_launch(monkeypatch, tmp_path, capsys) -> None:
+    settings_file = tmp_path / "prti1516eCRC.settings"
+    settings_file.write_text("CRC.enableHla4PreviewFeatures=false\n", encoding="utf-8")
+    monkeypatch.setattr(pitch_cli, "_crc_settings_search_roots", lambda: [tmp_path])
+    monkeypatch.setattr(pitch_cli, "_run_start_action", lambda *args, **kwargs: None)
+
+    assert main(["start", "prti1516e", "--enable-hla4-preview"]) == 0
+    captured = capsys.readouterr()
+    assert "start: set HLA 4 Preview to enabled in:" in captured.out
+    assert "prti1516eCRC.settings" in captured.out
+    assert "HLA 4 Preview features enabled: yes" in captured.out
+    assert "CRC.enableHla4PreviewFeatures=true" in settings_file.read_text(encoding="utf-8")
+
+
+def test_setup_can_enable_hla4_preview_for_an_already_installed_bundle(monkeypatch, tmp_path, capsys) -> None:
+    settings_file = tmp_path / "prti1516eCRC.settings"
+    settings_file.write_text("CRC.enableHla4PreviewFeatures=false\n", encoding="utf-8")
+    monkeypatch.setattr(pitch_cli, "_crc_settings_search_roots", lambda: [tmp_path])
+    monkeypatch.setattr(pitch_cli, "_print_route_visibility", lambda **kwargs: None)
+    monkeypatch.setattr(pitch_cli, "_is_windows_platform", lambda: False)
+    monkeypatch.setattr(pitch_cli, "_verify_setup_paths", lambda: [])
+    monkeypatch.setattr(pitch_cli, "_installed_components", lambda: {"prti1516e"})
+    monkeypatch.setattr(
+        pitch_cli,
+        "_install_specs_for_system",
+        lambda include_legacy_rti: [pitch_cli.InstallSpec("prti1516e", "prti1516e-free", tmp_path / "installer.sh")],
+    )
+    monkeypatch.setattr(pitch_cli, "_log_detected_installed", lambda detected: None)
+    monkeypatch.setattr(pitch_cli, "_maybe_print_prti_settings_summary", lambda triggered: None)
+
+    assert main(["setup", "--enable-hla4-preview"]) == 0
+    captured = capsys.readouterr()
+    assert "setup: set HLA 4 Preview to enabled in:" in captured.out
+    assert "prti1516eCRC.settings" in captured.out
+    assert "CRC.enableHla4PreviewFeatures=true" in settings_file.read_text(encoding="utf-8")
+
+
+def test_setup_route_wsl_keeps_hla4_preview_flag(monkeypatch) -> None:
+    captured = {}
+
+    def _fake_run_route_command(route_name, pitch_args, wsl_distro=None):
+        captured["route_name"] = route_name
+        captured["pitch_args"] = pitch_args
+        captured["wsl_distro"] = wsl_distro
+        return 0
+
+    monkeypatch.setattr(pitch_cli, "_run_route_command", _fake_run_route_command)
+    monkeypatch.setattr(pitch_cli, "_wsl_distribution_names", lambda: ["Ubuntu"])
+
+    assert main(["setup", "--route", "wsl", "--wsl-distro", "Ubuntu", "--enable-hla4-preview"]) == 0
+    assert captured["route_name"] == "wsl"
+    assert "--enable-hla4-preview" in captured["pitch_args"]
+    assert captured["wsl_distro"] == "Ubuntu"
 
 
 def test_setup_route_wsl_dispatches_through_route_runner(monkeypatch) -> None:
