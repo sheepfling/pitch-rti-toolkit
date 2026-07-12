@@ -1137,6 +1137,39 @@ def test_docker_up_builds_the_vendor_compose_command(monkeypatch, tmp_path) -> N
     assert command[6:10] == ["up", "-d", "--build", "pitch-crc"]
 
 
+def test_docker_restart_runs_down_then_up_and_smoke(monkeypatch, tmp_path) -> None:
+    user_data_root = tmp_path / "user-data"
+    vendor_root = tmp_path / "prti1516e"
+    vendor_samples = vendor_root / "samples" / "docker"
+    vendor_samples.mkdir(parents=True)
+    (vendor_samples / "prti1516eCRC.settings").write_text("CRC.enableHla4PreviewFeatures=false\n", encoding="utf-8")
+    (vendor_samples / "prti1516eLRC.settings").write_text("LRC.example=true\n", encoding="utf-8")
+    monkeypatch.setenv("PITCH_USER_DATA_ROOT", str(user_data_root))
+    monkeypatch.setenv("PITCH_PRTI_HOME", str(vendor_root))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_ENV_FILE", str(user_data_root / "docker" / "pitch-vendor-compose.env"))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_SETTINGS_ROOT", str(user_data_root / "docker" / "vendor-settings"))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_BUILD_ROOT", str(user_data_root / "docker" / "vendor-build"))
+
+    assert main(["docker", "init"]) == 0
+
+    captured = []
+
+    class _Result:
+        def __init__(self, returncode: int = 0) -> None:
+            self.returncode = returncode
+
+    def _fake_run(command, check=False, capture_output=False, text=False, env=None):
+        captured.append(command)
+        return _Result(0)
+
+    monkeypatch.setattr(pitch_cli.subprocess, "run", _fake_run)
+    monkeypatch.setattr(pitch_cli, "_vendor_docker_smoke_check", lambda: (True, "Vendor CRC is reachable on 127.0.0.1:8989."))
+
+    assert main(["docker", "restart"]) == 0
+    assert captured[0][6:] == ["down"]
+    assert captured[1][6:10] == ["up", "-d", "--build", "pitch-crc"]
+
+
 def test_docker_smoke_reports_reachability(monkeypatch, capsys) -> None:
     captured = {}
 
@@ -1222,6 +1255,45 @@ def test_docker_logs_builds_the_vendor_compose_command(monkeypatch, tmp_path) ->
     assert command[4] == "-f"
     assert command[5] == str(pitch_cli.ROOT / "docker" / "pitch-vendor-compose.yml")
     assert command[6:] == ["logs", "--no-color", "--tail", "25", "pitch-crc"]
+
+
+def test_docker_inspect_reports_summary_and_ps(monkeypatch, tmp_path, capsys) -> None:
+    user_data_root = tmp_path / "user-data"
+    vendor_root = tmp_path / "prti1516e"
+    vendor_samples = vendor_root / "samples" / "docker"
+    vendor_samples.mkdir(parents=True)
+    (vendor_samples / "prti1516eCRC.settings").write_text("CRC.enableHla4PreviewFeatures=true\n", encoding="utf-8")
+    (vendor_samples / "prti1516eLRC.settings").write_text("LRC.example=true\n", encoding="utf-8")
+    monkeypatch.setenv("PITCH_USER_DATA_ROOT", str(user_data_root))
+    monkeypatch.setenv("PITCH_PRTI_HOME", str(vendor_root))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_ENV_FILE", str(user_data_root / "docker" / "pitch-vendor-compose.env"))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_SETTINGS_ROOT", str(user_data_root / "docker" / "vendor-settings"))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_BUILD_ROOT", str(user_data_root / "docker" / "vendor-build"))
+
+    assert main(["docker", "init", "--enable-hla4-preview"]) == 0
+
+    captured = {}
+
+    class _Result:
+        def __init__(self, returncode: int = 0) -> None:
+            self.returncode = returncode
+
+    def _fake_run(command, check=False, capture_output=False, text=False, env=None):
+        captured["command"] = command
+        return _Result(0)
+
+    monkeypatch.setattr(pitch_cli.subprocess, "run", _fake_run)
+
+    assert main(["docker", "inspect"]) == 0
+    captured_out = capsys.readouterr()
+    assert "Vendor Docker setup:" in captured_out.out
+    assert "initialized: yes" in captured_out.out
+    assert "HLA 4 Preview: true" in captured_out.out
+    command = captured["command"]
+    assert command[0:4] == ["docker", "compose", "--env-file", str(user_data_root / "docker" / "pitch-vendor-compose.env")]
+    assert command[4] == "-f"
+    assert command[5] == str(pitch_cli.ROOT / "docker" / "pitch-vendor-compose.yml")
+    assert command[6:] == ["ps", "--all"]
 
 
 def test_vendor_docker_smoke_checks_webview_when_enabled(monkeypatch, tmp_path) -> None:

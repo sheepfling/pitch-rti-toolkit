@@ -775,6 +775,9 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--silent-install", action="store_true", help="Try the vendor installers in quiet mode.")
     setup_parser.add_argument("--route", choices=["native", "wsl", "docker", "auto"], default="native", help="Choose how setup is executed.")
     setup_parser.add_argument("--wsl-distro", help="Select a WSL distribution when route is wsl.")
+    setup_preview_group = setup_parser.add_mutually_exclusive_group()
+    setup_preview_group.add_argument("--enable-hla4-preview", action="store_true", help="Enable HLA 4 Preview in the discovered CRC settings after setup.")
+    setup_preview_group.add_argument("--disable-hla4-preview", action="store_true", help="Disable HLA 4 Preview in the discovered CRC settings after setup.")
     setup_parser.add_argument("--ports-config", default=str(ASSET_ROOT / "ports.conf"), help="Port probe configuration file.")
     setup_parser.add_argument("--source", help="Folder to scan and stage into the writable installer cache before setup.")
     setup_parser.set_defaults(handler=handle_setup)
@@ -899,6 +902,9 @@ def build_parser() -> argparse.ArgumentParser:
     docker_up_parser = docker_subparsers.add_parser("up", help="Start the vendor pRTI container with Docker Compose.")
     docker_up_parser.set_defaults(handler=handle_docker_up)
 
+    docker_restart_parser = docker_subparsers.add_parser("restart", help="Restart the vendor pRTI container and rerun the smoke check.")
+    docker_restart_parser.set_defaults(handler=handle_docker_restart)
+
     docker_down_parser = docker_subparsers.add_parser("down", help="Stop the vendor pRTI container with Docker Compose.")
     docker_down_parser.set_defaults(handler=handle_docker_down)
 
@@ -917,6 +923,9 @@ def build_parser() -> argparse.ArgumentParser:
     docker_logs_parser.add_argument("--service", help="Override the Docker Compose service name.")
     docker_logs_parser.set_defaults(handler=handle_docker_logs)
 
+    docker_inspect_parser = docker_subparsers.add_parser("inspect", help="Show the vendor Docker status summary and container table.")
+    docker_inspect_parser.set_defaults(handler=handle_docker_inspect)
+
     docker_status_parser = docker_subparsers.add_parser("status", help="Show the vendor Docker setup paths.")
     docker_status_parser.set_defaults(handler=handle_docker_status)
 
@@ -926,6 +935,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     settings_show_parser = settings_subparsers.add_parser("show", help="Show the discovered CRC settings and HLA 4 Preview state.")
     settings_show_parser.set_defaults(handler=handle_settings_show)
+
+    settings_set_parser = settings_subparsers.add_parser("set", help="Set a discovered CRC settings key across all discovered CRC settings files.")
+    settings_set_parser.add_argument("key", help="The settings key to write, such as CRC.enableHla4PreviewFeatures.")
+    settings_set_parser.add_argument("value", help="The value to write for the settings key.")
+    settings_set_parser.set_defaults(handler=handle_settings_set)
 
     rti_parser = subparsers.add_parser("rti", help="Run RTI-specific checks.")
     rti_subparsers = rti_parser.add_subparsers(dest="rti_command")
@@ -955,6 +969,9 @@ def build_parser() -> argparse.ArgumentParser:
     start_parser.add_argument("--port", type=_port_number, help="Probe a single localhost port after launching the target.")
     start_parser.add_argument("--probe-ports", action="store_true", help="Probe configured ports after launching the target.")
     start_parser.add_argument("--strict-probe", action="store_true", help="Fail if any configured ports are closed.")
+    start_preview_group = start_parser.add_mutually_exclusive_group()
+    start_preview_group.add_argument("--enable-hla4-preview", action="store_true", help="Enable HLA 4 Preview in the discovered CRC settings before launch.")
+    start_preview_group.add_argument("--disable-hla4-preview", action="store_true", help="Disable HLA 4 Preview in the discovered CRC settings before launch.")
     start_parser.add_argument("--ports-config", default=str(ASSET_ROOT / "ports.conf"), help="Port probe configuration file.")
     start_parser.set_defaults(handler=handle_start)
 
@@ -2484,6 +2501,26 @@ def _read_settings_value(path: Path, key: str) -> str | None:
     return None
 
 
+def _discovered_crc_settings_paths() -> list[Path]:
+    return _discover_crc_settings_files()
+
+
+def _set_crc_setting_everywhere(key: str, value: str) -> list[Path]:
+    settings_files = _discovered_crc_settings_paths()
+    if not settings_files:
+        raise FileNotFoundError("No CRC settings file was discovered.")
+
+    updated: list[Path] = []
+    for settings_file in settings_files:
+        _set_settings_value(settings_file, key, value)
+        updated.append(settings_file)
+    return updated
+
+
+def _set_hla4_preview_everywhere(enabled: bool) -> list[Path]:
+    return _set_crc_setting_everywhere("CRC.enableHla4PreviewFeatures", "true" if enabled else "false")
+
+
 def _read_env_value(path: Path, key: str) -> str | None:
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -2522,7 +2559,7 @@ def handle_docker(args: argparse.Namespace) -> int:
         if parser is not None:
             parser.print_help()
         else:
-            print("Usage: pitch docker init | pitch docker up | pitch docker down | pitch docker status")
+            print("Usage: pitch docker init | pitch docker up | pitch docker restart | pitch docker down | pitch docker inspect | pitch docker status")
         return 0
     return int(args.handler(args))
 
@@ -2639,6 +2676,13 @@ def handle_docker_up(args: argparse.Namespace) -> int:
     return 0
 
 
+def handle_docker_restart(args: argparse.Namespace) -> int:
+    down_rc = handle_docker_down(args)
+    if down_rc != 0:
+        return down_rc
+    return handle_docker_up(args)
+
+
 def handle_docker_smoke(args: argparse.Namespace) -> int:
     smoke_ok, smoke_detail = _vendor_docker_smoke_check(
         timeout_seconds=getattr(args, "timeout_seconds", 60.0),
@@ -2676,6 +2720,25 @@ def handle_docker_logs(args: argparse.Namespace) -> int:
     return int(completed.returncode)
 
 
+def _vendor_docker_status_lines() -> list[str]:
+    lines = [
+        "Vendor Docker setup:",
+        f"  pRTI home: {_vendor_docker_install_root() or 'missing'}",
+        f"  env file: {_vendor_docker_env_path()}",
+        f"  vendor settings overlay: {_vendor_docker_settings_root()}",
+        f"  vendor build context: {_vendor_docker_build_root()}",
+        f"  compose file: {VENDOR_DOCKER_COMPOSE_PATH}",
+    ]
+    initialized = _vendor_docker_env_path().exists() and _vendor_docker_settings_root().exists()
+    lines.append(f"  initialized: {'yes' if initialized else 'no'}")
+    crc_settings_path = _vendor_crc_settings_path()
+    if crc_settings_path.exists():
+        preview = _read_settings_value(crc_settings_path, "CRC.enableHla4PreviewFeatures")
+        if preview is not None:
+            lines.append(f"  HLA 4 Preview: {preview}")
+    return lines
+
+
 def handle_docker_down(args: argparse.Namespace) -> int:
     try:
         completed = _run_vendor_docker_compose("down")
@@ -2686,20 +2749,20 @@ def handle_docker_down(args: argparse.Namespace) -> int:
 
 
 def handle_docker_status(args: argparse.Namespace) -> int:
-    print("Vendor Docker setup:")
-    print(f"  pRTI home: {_vendor_docker_install_root() or 'missing'}")
-    print(f"  env file: {_vendor_docker_env_path()}")
-    print(f"  vendor settings overlay: {_vendor_docker_settings_root()}")
-    print(f"  vendor build context: {_vendor_docker_build_root()}")
-    print(f"  compose file: {VENDOR_DOCKER_COMPOSE_PATH}")
-    initialized = _vendor_docker_env_path().exists() and _vendor_docker_settings_root().exists()
-    print(f"  initialized: {'yes' if initialized else 'no'}")
-    crc_settings_path = _vendor_crc_settings_path()
-    if crc_settings_path.exists():
-        preview = _read_settings_value(crc_settings_path, "CRC.enableHla4PreviewFeatures")
-        if preview is not None:
-            print(f"  HLA 4 Preview: {preview}")
+    for line in _vendor_docker_status_lines():
+        print(line)
     return 0
+
+
+def handle_docker_inspect(args: argparse.Namespace) -> int:
+    for line in _vendor_docker_status_lines():
+        print(line)
+    try:
+        completed = _run_vendor_docker_compose("ps --all")
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    return int(completed.returncode)
 
 
 def _discover_importable_assets(source_root: Path) -> list[Path]:
@@ -3278,6 +3341,23 @@ def handle_settings(args: argparse.Namespace) -> int:
 
 def handle_settings_show(args: argparse.Namespace) -> int:
     _print_crc_settings_summary()
+    return 0
+
+
+def handle_settings_set(args: argparse.Namespace) -> int:
+    settings_files = _discover_crc_settings_files()
+    if not settings_files:
+        print("CRC settings: no settings file was discovered.", file=sys.stderr)
+        return 1
+
+    key = str(args.key)
+    value = str(args.value)
+    for settings_file in settings_files:
+        _set_settings_value(settings_file, key, value)
+
+    print(f"Updated {len(settings_files)} CRC settings file(s):")
+    for settings_file in settings_files:
+        print(f"  {settings_file}")
     return 0
 
 
