@@ -1,0 +1,41 @@
+name: pitch-rti-toolkit
+
+x-pitch-env: &pitch-env
+  PITCH_ASSET_ROOT: /workspace/pitch
+  PITCH_USER_DATA_ROOT: /var/lib/pitch/data
+  PITCH_INSTALLER_DROP_ROOT: /var/lib/pitch/installers
+  PITCH_PREFLIGHT_ARTIFACT_ROOT: /var/lib/pitch/data/preflight
+
+x-pitch-base: &pitch-base
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  image: pitch-rti-toolkit:5.5.10
+  init: true
+  stdin_open: true
+  tty: true
+  working_dir: /workspace
+  entrypoint: ["pitch"]
+  environment: *pitch-env
+  volumes:
+    - type: bind
+      source: ${PITCH_USER_DATA_ROOT}
+      target: /var/lib/pitch/data
+    - type: bind
+      source: ${PITCH_INSTALLER_DROP_ROOT}
+      target: /var/lib/pitch/installers
+
+services:
+  pitch-future:
+    <<: *pitch-base
+    environment:
+      <<: *pitch-env
+      PITCH_DOCKER_PROFILE: future
+      PITCH_RELEASE_CHANNEL: future
+
+  pitch-hla4:
+    <<: *pitch-base
+    environment:
+      <<: *pitch-env
+      PITCH_DOCKER_PROFILE: hla4
+      PITCH_RELEASE_CHANNEL: hla4

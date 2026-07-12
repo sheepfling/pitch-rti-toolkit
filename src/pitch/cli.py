@@ -279,7 +279,7 @@ def _route_specs() -> list[RouteSpec]:
     return [
         RouteSpec("native", "Native", "Run directly on the current operating system."),
         RouteSpec("wsl", "WSL", "Run through WSL on Windows with Linux installers and Linux launcher discovery."),
-        RouteSpec("docker", "Docker", "Run inside a Linux container for a portable Linux route."),
+        RouteSpec("docker", "Docker", "Run inside a Linux container through Docker Compose."),
     ]
 
 
@@ -289,7 +289,7 @@ def _route_available(route_name: str) -> bool:
     if route_name == "wsl":
         return platform.system() == "Windows" and shutil.which("wsl.exe") is not None
     if route_name == "docker":
-        return shutil.which("docker") is not None
+        return _docker_compose_available()
     return False
 
 
@@ -315,7 +315,7 @@ def _route_summary(route_name: str) -> str:
     if route_name == "wsl":
         return "Windows host -> WSL Linux shell."
     if route_name == "docker":
-        return "Containerized Linux execution."
+        return "Docker Compose containerized execution."
     return "Unknown route."
 
 
@@ -325,6 +325,7 @@ def _print_route_visibility(*, include_wsl_distros: bool = False) -> None:
         availability = "available" if _route_available(spec.name) else "unavailable"
         print(f"  {spec.name}: {availability} - {spec.description}")
     print(f"  recommended: {_default_route_name()} - {_default_route_reason()}")
+    print("  docker profiles: future (default), hla4")
     if include_wsl_distros:
         distros = _wsl_distribution_names()
         if distros:
@@ -347,10 +348,14 @@ def _route_context_name() -> str | None:
 
 
 def _route_context_detail() -> str | None:
-    if _route_context_name() != "wsl":
-        return None
-    distro = os.environ.get("PITCH_WSL_DISTRO", "").strip()
-    return distro or None
+    route_name = _route_context_name()
+    if route_name == "wsl":
+        distro = os.environ.get("PITCH_WSL_DISTRO", "").strip()
+        return distro or None
+    if route_name == "docker":
+        profile = os.environ.get("PITCH_DOCKER_PROFILE", "").strip()
+        return profile or None
+    return None
 
 
 def _print_active_route_banner() -> None:
@@ -445,12 +450,46 @@ def _translate_route_args_for_wsl(pitch_args: list[str]) -> list[str]:
     return translated
 
 
+def _docker_compose_file() -> Path:
+    return ROOT / "docker" / "compose.yml"
+
+
+def _docker_service_name() -> str:
+    profile = os.environ.get("PITCH_DOCKER_PROFILE", "future").strip().lower()
+    if profile == "hla4":
+        return "pitch-hla4"
+    return "pitch-future"
+
+
+def _docker_compose_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    try:
+        completed = subprocess.run(["docker", "compose", "version"], check=False, capture_output=True, text=True)
+    except OSError:
+        return False
+    return completed.returncode == 0
+
+
 def _route_payload_command(pitch_args: list[str], route_name: str, wsl_distro: str | None = None) -> list[str]:
     if route_name == "native":
         return []
 
     if route_name == "wsl":
         pitch_args = _translate_route_args_for_wsl(pitch_args)
+    if route_name == "docker":
+        command = [
+            "docker",
+            "compose",
+            "-f",
+            str(_docker_compose_file()),
+            "run",
+            "--rm",
+            "--build",
+            _docker_service_name(),
+        ]
+        command.extend(pitch_args)
+        return command
 
     install_command = _quote_posix_args(["python3", "-m", "pip", "install", "-e", "."])
     run_command = _quote_posix_args(["python3", "-m", "pitch", *pitch_args]) if pitch_args else _quote_posix_args(["python3", "-m", "pitch"])
@@ -494,13 +533,29 @@ def _docker_preflight_check() -> bool:
 
 
 def _docker_preflight_status() -> tuple[str, str, bool]:
+    if shutil.which("docker") is None:
+        return ("missing", "Could not find the Docker CLI. Install Docker Desktop or Docker Engine first.", False)
+
     try:
         completed = subprocess.run(["docker", "info"], check=False, capture_output=True, text=True)
     except OSError as exc:
         return ("missing", f"Could not reach the Docker CLI to verify the daemon: {exc}", False)
 
     if completed.returncode == 0:
-        return ("ok", "Docker daemon is reachable.", True)
+        try:
+            compose = subprocess.run(["docker", "compose", "version"], check=False, capture_output=True, text=True)
+        except OSError as exc:
+            return ("blocked", f"Docker daemon is reachable, but Docker Compose is unavailable: {exc}", False)
+        if compose.returncode == 0:
+            return ("ok", "Docker daemon and Docker Compose are reachable.", True)
+        compose_output = "\n".join(
+            part.strip()
+            for part in (getattr(compose, "stdout", "") or "", getattr(compose, "stderr", "") or "")
+            if part and part.strip()
+        )
+        if compose_output:
+            return ("blocked", f"Docker daemon is reachable, but Docker Compose is unavailable.\n{compose_output}", False)
+        return ("blocked", "Docker daemon is reachable, but Docker Compose is unavailable.", False)
 
     output = "\n".join(
         part.strip()
@@ -549,6 +604,11 @@ def _route_payload_env(route_name: str, wsl_distro: str | None = None) -> dict[s
     payload = {"PITCH_ROUTE_CONTEXT": route_name}
     if route_name == "wsl" and wsl_distro:
         payload["PITCH_WSL_DISTRO"] = wsl_distro
+    if route_name == "docker":
+        payload["PITCH_DOCKER_PROFILE"] = os.environ.get("PITCH_DOCKER_PROFILE", "future").strip().lower() or "future"
+        payload["PITCH_USER_DATA_ROOT"] = str(USER_DATA_ROOT)
+        payload["PITCH_INSTALLER_DROP_ROOT"] = str(INSTALLER_DROP_ROOT)
+        payload["PITCH_PREFLIGHT_ARTIFACT_ROOT"] = str(PREFLIGHT_ARTIFACT_ROOT)
     return payload
 
 

@@ -95,12 +95,21 @@ pitch route run docker setup
 pitch setup --route wsl
 pitch setup --route wsl --wsl-distro Ubuntu
 pitch setup --route docker
+PITCH_DOCKER_PROFILE=hla4 pitch route run docker verify
 ```
 
-`native` runs directly on the host OS, `wsl` runs the command through WSL on Windows, and `docker` runs it in a Linux container.
+`native` runs directly on the host OS, `wsl` runs the command through WSL on Windows, and `docker` runs it through Docker Compose in a Linux container.
 On Windows, the CLI now recommends `native` by default and leaves `wsl` and `docker` as explicit opt-in routes.
 `pitch route show` lists WSL distros with indexes, so `--wsl-distro 1` picks the first detected distro and `--wsl-distro Ubuntu` picks by name.
 `pitch setup --route ...` uses the same route choices for the main install flow.
+
+The Docker route keeps the mutable pieces outside the checkout:
+
+- `PITCH_USER_DATA_ROOT` stores the container's install state and preflight artifacts.
+- `PITCH_INSTALLER_DROP_ROOT` stores the installers users drop in for setup.
+- `PITCH_DOCKER_PROFILE` selects the Compose service, with `future` as the default and `hla4` available when you want that track instead.
+
+The Compose assets live in `docker/compose.yml` and `docker/Dockerfile`.
 
 To smoke-test the installed RTI, launch the console and ask it for help:
 

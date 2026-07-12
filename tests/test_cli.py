@@ -659,7 +659,10 @@ def test_route_run_wsl_translates_windows_paths(monkeypatch) -> None:
     captured = {}
 
     class _Result:
-        returncode = 0
+        def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
 
     def _fake_run(command, check=False, capture_output=False, text=False, env=None):
         captured["command"] = command
@@ -686,7 +689,10 @@ def test_route_run_wsl_accepts_distribution_index(monkeypatch) -> None:
     captured = {}
 
     class _Result:
-        returncode = 0
+        def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
 
     def _fake_run(command, check=False, capture_output=False, text=False, env=None):
         captured["command"] = command
@@ -710,7 +716,10 @@ def test_route_run_wsl_uses_default_distribution_when_not_selected(monkeypatch) 
     captured = {}
 
     class _Result:
-        returncode = 0
+        def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
 
     def _fake_run(command, check=False, capture_output=False, text=False, env=None):
         captured["command"] = command
@@ -743,9 +752,16 @@ def test_route_run_docker_builds_container_command(monkeypatch) -> None:
     captured = {}
 
     class _Result:
-        returncode = 0
+        def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
 
     def _fake_run(command, check=False, capture_output=False, text=False, env=None):
+        if command == ["docker", "info"]:
+            return _Result(0, stdout="Client:\n Context: desktop-linux")
+        if command == ["docker", "compose", "version"]:
+            return _Result(0, stdout="Docker Compose version v2.32.0")
         captured["command"] = command
         captured["env"] = env
         return _Result()
@@ -755,9 +771,14 @@ def test_route_run_docker_builds_container_command(monkeypatch) -> None:
     assert main(["route", "run", "docker", "verify"]) == 0
     command = captured["command"]
     assert command[0] == "docker"
-    assert "python:3.12" in command
-    assert command[command.index("sh")] == "sh"
+    assert command[1:4] == ["compose", "-f", str(pitch_cli.ROOT / "docker" / "compose.yml")]
+    assert command[4:8] == ["run", "--rm", "--build", "pitch-future"]
+    assert command[-1] == "verify"
     assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "docker"
+    assert captured["env"]["PITCH_DOCKER_PROFILE"] == "future"
+    assert captured["env"]["PITCH_USER_DATA_ROOT"] == str(pitch_cli.USER_DATA_ROOT)
+    assert captured["env"]["PITCH_INSTALLER_DROP_ROOT"] == str(pitch_cli.INSTALLER_DROP_ROOT)
+    assert captured["env"]["PITCH_PREFLIGHT_ARTIFACT_ROOT"] == str(pitch_cli.PREFLIGHT_ARTIFACT_ROOT)
 
 
 def test_route_run_docker_warns_when_the_daemon_pipe_is_inaccessible(monkeypatch, capsys) -> None:
@@ -773,6 +794,8 @@ def test_route_run_docker_warns_when_the_daemon_pipe_is_inaccessible(monkeypatch
 
     def _fake_run(command, check=False, capture_output=False, text=False, env=None):
         calls.append(command)
+        if command == ["docker", "compose", "version"]:
+            return _Result(0, stdout="Docker Compose version v2.32.0")
         if command == ["docker", "info"]:
             return _Result(1, stderr="permission denied while trying to connect to the docker API at npipe:////./pipe/docker_engine")
         raise AssertionError(f"Unexpected command: {command}")
@@ -783,7 +806,7 @@ def test_route_run_docker_warns_when_the_daemon_pipe_is_inaccessible(monkeypatch
     captured = capsys.readouterr()
     assert "Docker Desktop is reachable, but this session cannot access the Docker API pipe." in captured.err
     assert "elevated PowerShell session" in captured.err
-    assert calls == [["docker", "info"]]
+    assert calls == [["docker", "compose", "version"], ["docker", "info"]]
 
 
 def test_route_run_docker_proceeds_after_a_successful_preflight(monkeypatch) -> None:
@@ -800,6 +823,8 @@ def test_route_run_docker_proceeds_after_a_successful_preflight(monkeypatch) -> 
     def _fake_run(command, check=False, capture_output=False, text=False, env=None):
         if command == ["docker", "info"]:
             return _Result(0, stdout="Client:\n Context: desktop-linux")
+        if command == ["docker", "compose", "version"]:
+            return _Result(0, stdout="Docker Compose version v2.32.0")
         captured["command"] = command
         captured["env"] = env
         return _Result(0)
@@ -809,7 +834,8 @@ def test_route_run_docker_proceeds_after_a_successful_preflight(monkeypatch) -> 
     assert main(["route", "run", "docker", "verify"]) == 0
     command = captured["command"]
     assert command[0] == "docker"
-    assert "python:3.12" in command
+    assert command[1:4] == ["compose", "-f", str(pitch_cli.ROOT / "docker" / "compose.yml")]
+    assert command[4:8] == ["run", "--rm", "--build", "pitch-future"]
     assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "docker"
 
 
@@ -854,11 +880,12 @@ def test_download_fetch_shows_active_route_banner(monkeypatch, tmp_path, capsys)
 
 def test_start_shows_active_route_banner(monkeypatch, capsys) -> None:
     monkeypatch.setenv("PITCH_ROUTE_CONTEXT", "docker")
+    monkeypatch.setenv("PITCH_DOCKER_PROFILE", "hla4")
     monkeypatch.setattr(pitch_cli, "_run_start_action", lambda *args, **kwargs: None)
 
     assert main(["start", "root"]) == 0
     captured = capsys.readouterr()
-    assert "Selected route: DOCKER (Containerized Linux execution.)" in captured.out
+    assert "Selected route: DOCKER (hla4; Docker Compose containerized execution.)" in captured.out
 
 
 def test_setup_route_wsl_dispatches_through_route_runner(monkeypatch) -> None:
