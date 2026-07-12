@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -314,6 +315,8 @@ def build_parser() -> argparse.ArgumentParser:
     download_fetch_parser = download_subparsers.add_parser("fetch", help="Download a file from a URL into the current directory or a chosen path.")
     download_fetch_parser.add_argument("--url", required=True, help="Direct file URL to download.")
     download_fetch_parser.add_argument("--output", help="Write the download to this path instead of the URL filename.")
+    download_fetch_parser.add_argument("--filename", help="Pick a specific installer filename from a page URL.")
+    download_fetch_parser.add_argument("--platform", choices=["auto", "windows64", "windows32", "linux64", "linux32", "mac"], default="auto", help="Pick an installer variant from a page URL.")
     download_fetch_parser.set_defaults(handler=handle_download_fetch)
 
     download_submit_parser = download_subparsers.add_parser("submit", help="Submit the Pitch free-download request directly.")
@@ -1490,6 +1493,77 @@ def _download_url(url: str, output_path: Path | None = None) -> Path:
         return target
 
 
+def _download_is_direct_file(url: str) -> bool:
+    path = urllib.parse.urlparse(url).path.lower()
+    if path.endswith((".asp", ".aspx", ".php", ".htm", ".html")):
+        return False
+    return bool(Path(path).suffix)
+
+
+def _download_target_platform() -> str:
+    system = platform.system()
+    if system == "Windows":
+        return "windows64" if platform.architecture()[0] == "64bit" else "windows32"
+    if system == "Linux":
+        return "linux64" if platform.machine().endswith("64") else "linux32"
+    if system == "Darwin":
+        return "mac"
+    return "windows64"
+
+
+def _download_candidate_urls(page_url: str) -> list[str]:
+    request = urllib.request.Request(
+        page_url,
+        headers={
+            "User-Agent": PITCH_FREE_DOWNLOAD_HEADERS["User-Agent"],
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Referer": PITCH_FREE_DOWNLOAD_URL,
+        },
+        method="GET",
+    )
+
+    with urllib.request.urlopen(request, timeout=30) as response:
+        html = response.read().decode("utf-8", errors="replace")
+
+    hrefs = re.findall(r"""href=['"]([^'"]+)['"]""", html, flags=re.IGNORECASE)
+    resolved: list[str] = []
+    for href in hrefs:
+        candidate = urllib.parse.urljoin(page_url, href)
+        if _download_is_direct_file(candidate):
+            resolved.append(candidate)
+    return resolved
+
+
+def _download_pick_candidate(page_url: str, candidates: list[str], *, filename: str | None = None, platform_hint: str | None = None) -> str:
+    if filename:
+        for candidate in candidates:
+            if Path(urllib.parse.urlparse(candidate).path).name == filename:
+                return candidate
+        raise RuntimeError(f"Could not find installer named {filename} at {page_url}")
+
+    hint = platform_hint or _download_target_platform()
+    if hint == "windows64":
+        order = ("windows64", "windows32", "linux64", "linux32", "mac")
+    elif hint == "windows32":
+        order = ("windows32", "windows64", "linux32", "linux64", "mac")
+    elif hint == "linux64":
+        order = ("linux64", "linux32", "windows64", "windows32", "mac")
+    elif hint == "linux32":
+        order = ("linux32", "linux64", "windows32", "windows64", "mac")
+    elif hint == "mac":
+        order = ("mac", "windows64", "windows32", "linux64", "linux32")
+    else:
+        order = (hint,)
+
+    for token in order:
+        for candidate in candidates:
+            name = Path(urllib.parse.urlparse(candidate).path).name.lower()
+            if token in name:
+                return candidate
+
+    raise RuntimeError(f"Could not resolve an installer link from {page_url}")
+
+
 def handle_download(args: argparse.Namespace) -> int:
     parser = getattr(args, "parser", None)
     if parser is not None:
@@ -1581,9 +1655,18 @@ def handle_download_submit(args: argparse.Namespace) -> int:
 
 def handle_download_fetch(args: argparse.Namespace) -> int:
     try:
-        downloaded_path = _download_url(args.url, Path(args.output).expanduser() if args.output else None)
+        url = args.url
+        if _download_is_direct_file(url):
+            resolved_url = url
+        else:
+            platform_hint = None if args.platform == "auto" else args.platform
+            resolved_url = _download_pick_candidate(url, _download_candidate_urls(url), filename=args.filename, platform_hint=platform_hint)
+        downloaded_path = _download_url(resolved_url, Path(args.output).expanduser() if args.output else None)
     except urllib.error.URLError as exc:
         print(f"Could not download {args.url}: {exc}", file=sys.stderr)
+        return 1
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
         return 1
 
     print(f"Downloaded {args.url} to {downloaded_path}")

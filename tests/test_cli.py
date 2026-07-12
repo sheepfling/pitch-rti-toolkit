@@ -253,6 +253,140 @@ def test_download_fetch_downloads_to_output_path(monkeypatch, tmp_path, capsys) 
     assert f"Downloaded https://example.com/files/pitch.bin to {output_path}" in captured.out
 
 
+def test_download_fetch_resolves_filename_from_page(monkeypatch, tmp_path, capsys) -> None:
+    captured_request = {}
+
+    class _HtmlResponse:
+        def __init__(self, payload: bytes):
+            self._payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size=-1):
+            return self._payload
+
+    class _BinaryResponse:
+        url = "https://example.com/installers/Windows%20(x64)/pitch.exe"
+
+        def __init__(self, payload: bytes):
+            self._payload = payload
+            self._consumed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size=-1):
+            if self._consumed:
+                return b""
+            self._consumed = True
+            return self._payload
+
+    def _fake_urlopen(request, timeout=0):
+        captured_request.setdefault("urls", []).append(request.full_url)
+        if request.full_url.endswith("install.asp"):
+            html = b"""<html><body><a href='installers/Windows (x64)/prti1516e-free_5_5_10_windows64.exe'>Windows</a><a href='installers/Linux (x64)/prti1516e-free_5_5_10_linux64.sh'>Linux</a></body></html>"""
+            return _HtmlResponse(html)
+        if request.full_url.endswith("prti1516e-free_5_5_10_windows64.exe"):
+            return _BinaryResponse(b"binary-bytes")
+        raise AssertionError(f"Unexpected URL: {request.full_url}")
+
+    monkeypatch.setattr(pitch_cli.urllib.request, "urlopen", _fake_urlopen)
+
+    output_path = tmp_path / "downloads" / "windows64.exe"
+    assert main([
+        "download",
+        "fetch",
+        "--url",
+        "https://www2.pitch.se/pRTI1516e/Releases/v5.5.10-free/SnvHLyNhR6A9ZgoQ/install.asp",
+        "--filename",
+        "prti1516e-free_5_5_10_windows64.exe",
+        "--output",
+        str(output_path),
+    ]) == 0
+    captured = capsys.readouterr()
+    assert captured_request["urls"] == [
+        "https://www2.pitch.se/pRTI1516e/Releases/v5.5.10-free/SnvHLyNhR6A9ZgoQ/install.asp",
+        "https://www2.pitch.se/pRTI1516e/Releases/v5.5.10-free/SnvHLyNhR6A9ZgoQ/installers/Windows (x64)/prti1516e-free_5_5_10_windows64.exe",
+    ]
+    assert output_path.read_bytes() == b"binary-bytes"
+    assert "Downloaded https://www2.pitch.se/pRTI1516e/Releases/v5.5.10-free/SnvHLyNhR6A9ZgoQ/install.asp to" in captured.out
+
+
+def test_download_fetch_resolves_by_platform_from_page(monkeypatch, tmp_path, capsys) -> None:
+    captured_request = {}
+
+    class _HtmlResponse:
+        def __init__(self, payload: bytes):
+            self._payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size=-1):
+            return self._payload
+
+    class _BinaryResponse:
+        url = "https://example.com/installers/Linux%20(x64)/pitch.sh"
+
+        def __init__(self, payload: bytes):
+            self._payload = payload
+            self._consumed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size=-1):
+            if self._consumed:
+                return b""
+            self._consumed = True
+            return self._payload
+
+    def _fake_urlopen(request, timeout=0):
+        captured_request.setdefault("urls", []).append(request.full_url)
+        if request.full_url.endswith("install.asp"):
+            html = b"""<html><body><a href='installers/Windows (x64)/prti1516e-free_5_5_10_windows64.exe'>Windows</a><a href='installers/Linux (x64)/prti1516e-free_5_5_10_linux64.sh'>Linux</a></body></html>"""
+            return _HtmlResponse(html)
+        if request.full_url.endswith("prti1516e-free_5_5_10_linux64.sh"):
+            return _BinaryResponse(b"linux-bytes")
+        raise AssertionError(f"Unexpected URL: {request.full_url}")
+
+    monkeypatch.setattr(pitch_cli.urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(pitch_cli.platform, "machine", lambda: "x86_64")
+
+    output_path = tmp_path / "downloads" / "linux64.sh"
+    assert main([
+        "download",
+        "fetch",
+        "--url",
+        "https://www2.pitch.se/pRTI1516e/Releases/v5.5.10-free/SnvHLyNhR6A9ZgoQ/install.asp",
+        "--platform",
+        "auto",
+        "--output",
+        str(output_path),
+    ]) == 0
+    captured = capsys.readouterr()
+    assert captured_request["urls"] == [
+        "https://www2.pitch.se/pRTI1516e/Releases/v5.5.10-free/SnvHLyNhR6A9ZgoQ/install.asp",
+        "https://www2.pitch.se/pRTI1516e/Releases/v5.5.10-free/SnvHLyNhR6A9ZgoQ/installers/Linux (x64)/prti1516e-free_5_5_10_linux64.sh",
+    ]
+    assert output_path.read_bytes() == b"linux-bytes"
+    assert "Downloaded https://www2.pitch.se/pRTI1516e/Releases/v5.5.10-free/SnvHLyNhR6A9ZgoQ/install.asp to" in captured.out
+
+
 def test_setup_reports_the_installer_drop_root(monkeypatch, tmp_path, capsys) -> None:
     empty_search_root = tmp_path / "empty"
     empty_search_root.mkdir()

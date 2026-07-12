@@ -135,6 +135,8 @@ If Pitch gives you a direct file link and you want the CLI to fetch it, use:
 python -m pitch download fetch --url https://example.com/pitch-download.bin --output C:\\Users\\you\\Downloads\\pitch-download.bin
 ```
 
+If you have the Pitch install page instead of a direct file link, you can still pass that page URL and choose the installer by `--filename` or `--platform`.
+
 For a one-step install-and-probe run:
 
 ```bash
