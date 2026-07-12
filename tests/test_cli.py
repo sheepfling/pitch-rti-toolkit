@@ -5,7 +5,7 @@ from pathlib import Path
 import pitch.cli as pitch_cli
 import pitch_bootstrap
 from pitch.cli import main
-from pitch_bootstrap import ensure_installer_drop_root, resolve_installer_drop_root, resolve_user_data_root
+from pitch_bootstrap import ensure_installer_drop_root, resolve_installer_drop_root, resolve_user_data_root, sha256_file
 
 
 def test_verify_passes_for_source_lite_bundle() -> None:
@@ -157,6 +157,37 @@ def test_assets_import_stages_recognized_files(monkeypatch, tmp_path) -> None:
     assert (staged_root / "release_notes.txt").exists()
     assert (staged_root / "prti_users_guide.pdf").exists()
     assert (staged_root / "prti1516e-free_5_5_10_windows64.exe").exists()
+    manifest = staged_root / "checksums.sha256"
+    assert manifest.exists()
+    assert "prti1516e-free_5_5_10_windows64.exe" in manifest.read_text(encoding="utf-8")
+
+
+def test_assets_verify_checks_the_staged_download_manifest(monkeypatch, tmp_path, capsys) -> None:
+    staged_root = tmp_path / "staged"
+    staged_root.mkdir()
+    installer = staged_root / "prti1516e-free_5_5_10_windows64.exe"
+    installer.write_text("exe-bytes", encoding="utf-8")
+    manifest = staged_root / "checksums.sha256"
+    manifest.write_text(f"{sha256_file(installer)}  {installer.name}\n", encoding="utf-8")
+    monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", str(staged_root))
+
+    assert main(["assets", "verify"]) == 0
+    captured = capsys.readouterr()
+    assert "Downloaded artifacts verification passed." in captured.out
+
+
+def test_assets_verify_reports_checksum_mismatches(monkeypatch, tmp_path, capsys) -> None:
+    staged_root = tmp_path / "staged"
+    staged_root.mkdir()
+    installer = staged_root / "prti1516e-free_5_5_10_windows64.exe"
+    installer.write_text("exe-bytes", encoding="utf-8")
+    manifest = staged_root / "checksums.sha256"
+    manifest.write_text(f"{'0' * 64}  {installer.name}\n", encoding="utf-8")
+    monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", str(staged_root))
+
+    assert main(["assets", "verify"]) == 1
+    captured = capsys.readouterr()
+    assert "Checksum mismatch:" in captured.err
 
 
 def test_assets_import_skips_identical_files(monkeypatch, tmp_path, capsys) -> None:
@@ -1005,6 +1036,7 @@ def test_docker_init_copies_vendor_settings_and_enables_hla4_preview(monkeypatch
     monkeypatch.setenv("PITCH_PRTI_HOME", str(vendor_root))
     monkeypatch.setenv("PITCH_VENDOR_DOCKER_ENV_FILE", str(user_data_root / "docker" / "pitch-vendor-compose.env"))
     monkeypatch.setenv("PITCH_VENDOR_DOCKER_SETTINGS_ROOT", str(user_data_root / "docker" / "vendor-settings"))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_BUILD_ROOT", str(user_data_root / "docker" / "vendor-build"))
 
     assert main(["docker", "init", "--enable-hla4-preview"]) == 0
     captured = capsys.readouterr()
@@ -1013,14 +1045,17 @@ def test_docker_init_copies_vendor_settings_and_enables_hla4_preview(monkeypatch
 
     env_file = user_data_root / "docker" / "pitch-vendor-compose.env"
     settings_root = user_data_root / "docker" / "vendor-settings"
+    build_root = user_data_root / "docker" / "vendor-build"
     crc_settings = settings_root / "prti1516eCRC.settings"
     lrc_settings = settings_root / "prti1516eLRC.settings"
 
     assert env_file.exists()
     assert crc_settings.exists()
     assert lrc_settings.exists()
+    assert (build_root / "webviewinstaller64").exists()
     assert "CRC_ENABLE_HLA4_PREVIEW=1" in env_file.read_text(encoding="utf-8")
     assert "PITCH_PRTI_HOME=" in env_file.read_text(encoding="utf-8")
+    assert "PITCH_VENDOR_DOCKER_BUILD_ROOT=" in env_file.read_text(encoding="utf-8")
     assert "CRC.enableHla4PreviewFeatures=true" in crc_settings.read_text(encoding="utf-8")
 
 
@@ -1035,6 +1070,7 @@ def test_docker_status_reports_vendor_preview_state(monkeypatch, tmp_path, capsy
     monkeypatch.setenv("PITCH_PRTI_HOME", str(vendor_root))
     monkeypatch.setenv("PITCH_VENDOR_DOCKER_ENV_FILE", str(user_data_root / "docker" / "pitch-vendor-compose.env"))
     monkeypatch.setenv("PITCH_VENDOR_DOCKER_SETTINGS_ROOT", str(user_data_root / "docker" / "vendor-settings"))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_BUILD_ROOT", str(user_data_root / "docker" / "vendor-build"))
 
     assert main(["docker", "init", "--enable-hla4-preview"]) == 0
     assert main(["docker", "status"]) == 0
@@ -1055,6 +1091,7 @@ def test_docker_up_builds_the_vendor_compose_command(monkeypatch, tmp_path) -> N
     monkeypatch.setenv("PITCH_PRTI_HOME", str(vendor_root))
     monkeypatch.setenv("PITCH_VENDOR_DOCKER_ENV_FILE", str(user_data_root / "docker" / "pitch-vendor-compose.env"))
     monkeypatch.setenv("PITCH_VENDOR_DOCKER_SETTINGS_ROOT", str(user_data_root / "docker" / "vendor-settings"))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_BUILD_ROOT", str(user_data_root / "docker" / "vendor-build"))
 
     assert main(["docker", "init"]) == 0
 
@@ -1069,6 +1106,7 @@ def test_docker_up_builds_the_vendor_compose_command(monkeypatch, tmp_path) -> N
         return _Result(0)
 
     monkeypatch.setattr(pitch_cli.subprocess, "run", _fake_run)
+    monkeypatch.setattr(pitch_cli, "_vendor_docker_smoke_check", lambda: (True, "Vendor CRC is reachable on 127.0.0.1:8989."))
 
     assert main(["docker", "up"]) == 0
     command = captured["command"]

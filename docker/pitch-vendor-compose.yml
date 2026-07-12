@@ -3,7 +3,7 @@ name: pitch-vendor
 services:
   pitch-crc:
     build:
-      context: "${PITCH_PRTI_HOME}"
+      context: "${PITCH_VENDOR_DOCKER_BUILD_ROOT}"
       dockerfile: samples/docker/Dockerfile
     image: pitch-rti-vendor:5.5.10-free
     init: true

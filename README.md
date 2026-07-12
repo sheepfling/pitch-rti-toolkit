@@ -122,9 +122,9 @@ pitch docker up
 pitch docker down
 ```
 
-`pitch docker init` copies the vendor `prti1516eCRC.settings` and `prti1516eLRC.settings` into a writable overlay under the user data root, writes a separate `pitch-vendor-compose.env`, and keeps the original checkout or wheel untouched.
+`pitch docker init` copies the vendor `prti1516eCRC.settings` and `prti1516eLRC.settings` into a writable overlay under the user data root, stages the Docker build context into a separate writable folder, writes a separate `pitch-vendor-compose.env`, and keeps the original checkout or wheel untouched.
 If you enable HLA 4 Preview, the copied CRC settings file is updated in place so the setting is discoverable before startup.
-The vendor container Compose file lives at `docker/pitch-vendor-compose.yml` and uses the installed RTI as the build context.
+The vendor container Compose file lives at `docker/pitch-vendor-compose.yml` and uses the staged vendor build context created by `pitch docker init`.
 
 To smoke-test the installed RTI, launch the console and ask it for help:
 
@@ -243,8 +243,15 @@ On Linux and WSL, the same setup flow uses the `.sh` installers from `pitch/linu
 `verify` confirms the bundle is complete before you install anything:
 
 - required bootstrap files and payloads exist
-- SHA-256 checksums match `pitch/checksums.sha256` for vendor payloads and bundled PDFs
 - the port probe config is present
+
+Downloaded installers and other staged vendor artifacts are verified separately with:
+
+```bash
+pitch assets verify
+```
+
+That command checks the local checksum manifest written into the installer drop root by `pitch assets import`.
 
 ## Layout
 
@@ -256,7 +263,7 @@ On Linux and WSL, the same setup flow uses the `.sh` installers from `pitch/linu
 - `pitch/plugin/` - Pitch Unreal Engine connector package
 - `pitch/linux/`, `pitch/windows/`, and `pitch/mac/` - vendor payloads and unpacked runtime trees
 - `pitch/ports.conf` - default port probe list
-- `pitch/checksums.sha256` - vendor payload and PDF checksum manifest
+- `pitch/checksums.sha256` - bundle fingerprint marker for the source tree
 - `pitch/pitch-install-roots.example.json` - sample machine-local install-root override
 - No root-level shell, PowerShell, cmd, or Python compatibility shims are shipped
 

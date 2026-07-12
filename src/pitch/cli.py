@@ -10,9 +10,11 @@ import platform
 import shlex
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -60,9 +62,11 @@ DOCKER_ENV_PATH = DOCKER_ENV_ROOT / DOCKER_ENV_FILENAME
 VENDOR_DOCKER_ENV_FILENAME = "pitch-vendor-compose.env"
 VENDOR_DOCKER_ENV_PATH = DOCKER_ENV_ROOT / VENDOR_DOCKER_ENV_FILENAME
 VENDOR_DOCKER_SETTINGS_ROOT = DOCKER_ENV_ROOT / "vendor-settings"
+VENDOR_DOCKER_BUILD_ROOT = DOCKER_ENV_ROOT / "vendor-build"
 VENDOR_CRC_SETTINGS_PATH = VENDOR_DOCKER_SETTINGS_ROOT / "prti1516eCRC.settings"
 VENDOR_LRC_SETTINGS_PATH = VENDOR_DOCKER_SETTINGS_ROOT / "prti1516eLRC.settings"
 VENDOR_DOCKER_COMPOSE_PATH = ROOT / "docker" / "pitch-vendor-compose.yml"
+INSTALLER_CHECKSUM_MANIFEST_NAME = "checksums.sha256"
 CRC_SETTINGS_NAME_HINTS = (
     "prti1516eCRC.settings",
     "pRTI1516eCRC.settings",
@@ -124,6 +128,17 @@ ASSET_IMPORTABLE_FILENAMES = (
     "prti1516e-free_5_5_10_linux64.sh",
     "prti1516e-free_5_5_10_mac.dmg",
 )
+CHECKSUM_TRACKED_FILENAMES = {
+    "HlaStarterKit_v1.0.2_windows64.exe",
+    "PitchVisualOMTFree_v2.7.0_windows64.exe",
+    "HlaStarterKit_v1.0.2_linux64.sh",
+    "PitchVisualOMTFree_v2.7.0_linux64.sh",
+    "prti1516e-free_5_5_10_windows64.exe",
+    "prti1516e-free_5_5_10_windows32.exe",
+    "prti1516e-free_5_5_10_linux32.sh",
+    "prti1516e-free_5_5_10_linux64.sh",
+    "prti1516e-free_5_5_10_mac.dmg",
+}
 
 
 @dataclass(frozen=True)
@@ -506,6 +521,13 @@ def _vendor_docker_settings_root() -> Path:
     return VENDOR_DOCKER_SETTINGS_ROOT
 
 
+def _vendor_docker_build_root() -> Path:
+    override = os.environ.get("PITCH_VENDOR_DOCKER_BUILD_ROOT", "").strip()
+    if override:
+        return _coerce_env_path(override)
+    return VENDOR_DOCKER_BUILD_ROOT
+
+
 def _vendor_crc_settings_path() -> Path:
     return _vendor_docker_settings_root() / "prti1516eCRC.settings"
 
@@ -770,6 +792,9 @@ def build_parser() -> argparse.ArgumentParser:
     assets_import_parser.add_argument("--force", action="store_true", help="Overwrite existing staged files.")
     assets_import_parser.set_defaults(handler=handle_assets_import)
 
+    assets_verify_parser = assets_subparsers.add_parser("verify", help="Verify the staged downloaded artifacts against their local checksum manifest.")
+    assets_verify_parser.set_defaults(handler=handle_assets_verify)
+
     download_parser = subparsers.add_parser("download", help="Prepare Pitch free-download autofill helpers.")
     download_subparsers = download_parser.add_subparsers(dest="download_command")
     download_parser.set_defaults(handler=handle_download, parser=download_parser)
@@ -879,10 +904,51 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _verify_paths() -> list[str]:
-    failures = []
-    failures.extend(verify_paths_exist(ROOT, VERIFY_REQUIRED_PATHS))
-    failures.extend(verify_manifest(ROOT, ASSET_ROOT / "checksums.sha256"))
-    return failures
+    return verify_paths_exist(ROOT, VERIFY_REQUIRED_PATHS)
+
+
+def _installer_manifest_path(root: Path | None = None) -> Path:
+    base = root if root is not None else resolve_installer_drop_root()
+    return base / INSTALLER_CHECKSUM_MANIFEST_NAME
+
+
+def _checksum_tracked_artifact_paths(root: Path) -> list[Path]:
+    if not root.exists() or not root.is_dir():
+        return []
+
+    tracked: list[Path] = []
+    for candidate in root.iterdir():
+        if candidate.is_file() and candidate.name in CHECKSUM_TRACKED_FILENAMES:
+            tracked.append(candidate)
+    return sorted(tracked, key=lambda path: path.name.lower())
+
+
+def _write_installer_checksum_manifest(root: Path) -> Path:
+    manifest_path = _installer_manifest_path(root)
+    entries: list[str] = []
+    for path in _checksum_tracked_artifact_paths(root):
+        entries.append(f"{sha256_file(path)}  {path.name}")
+
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text("\n".join(entries) + ("\n" if entries else ""), encoding="utf-8")
+    return manifest_path
+
+
+def _verify_installer_checksum_manifest() -> list[str]:
+    manifest_path = _installer_manifest_path()
+    if not manifest_path.exists():
+        return [f"Missing checksum manifest: {manifest_path.name}"]
+
+    root = manifest_path.parent
+    tracked_files = _checksum_tracked_artifact_paths(root)
+    if not tracked_files:
+        return [f"No tracked downloaded artifacts were found in: {root}"]
+
+    failures = verify_manifest(root, manifest_path)
+    if failures:
+        return failures
+
+    return []
 
 
 def _verify_setup_paths() -> list[str]:
@@ -2228,7 +2294,7 @@ def handle_assets(args: argparse.Namespace) -> int:
     if parser is not None:
         parser.print_help()
     else:
-        print("Usage: pitch assets init | pitch assets import <source-folder>")
+        print("Usage: pitch assets init | pitch assets import <source-folder> | pitch assets verify")
     return 0
 
 
@@ -2257,6 +2323,15 @@ def handle_assets_open(args: argparse.Namespace) -> int:
     path = ensure_installer_drop_root()
     _open_path(path)
     print(f"Opened installer drop root: {path}")
+    return 0
+
+
+def handle_assets_verify(args: argparse.Namespace) -> int:
+    failures = _verify_installer_checksum_manifest()
+    if failures:
+        _failures_to_stderr(failures)
+        return 1
+    print("Downloaded artifacts verification passed.")
     return 0
 
 
@@ -2290,6 +2365,19 @@ def _copy_vendor_settings(src_root: Path, dest_root: Path) -> None:
         source = src_root / "samples" / "docker" / filename
         if source.exists():
             shutil.copy2(source, dest_root / filename)
+
+
+def _copy_vendor_docker_context(src_root: Path, dest_root: Path) -> None:
+    dest_root.mkdir(parents=True, exist_ok=True)
+    for relative_path in ("lib", "samples/docker", "versioninfo.txt"):
+        source = src_root / relative_path
+        destination = dest_root / relative_path
+        if source.is_dir():
+            shutil.copytree(source, destination, dirs_exist_ok=True)
+        elif source.is_file():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+    (dest_root / "webviewinstaller64").mkdir(parents=True, exist_ok=True)
 
 
 def _set_settings_value(path: Path, key: str, value: str) -> None:
@@ -2332,6 +2420,7 @@ def _vendor_docker_payload(*, enable_hla4_preview: bool = False) -> dict[str, st
 
     payload = {
         "PITCH_PRTI_HOME": str(install_root),
+        "PITCH_VENDOR_DOCKER_BUILD_ROOT": str(_vendor_docker_build_root()),
         "PITCH_VENDOR_DOCKER_SETTINGS_ROOT": str(_vendor_docker_settings_root()),
         "PITCH_VENDOR_DOCKER_ENV_FILE": str(_vendor_docker_env_path()),
         "LICENSE_SERVER": os.environ.get("LICENSE_SERVER", "pfls"),
@@ -2358,7 +2447,8 @@ def handle_docker(args: argparse.Namespace) -> int:
 def handle_docker_init(args: argparse.Namespace) -> int:
     env_path = _vendor_docker_env_path()
     settings_root = _vendor_docker_settings_root()
-    if env_path.exists() and settings_root.exists() and not args.force:
+    build_root = _vendor_docker_build_root()
+    if env_path.exists() and settings_root.exists() and build_root.exists() and not args.force:
         print(f"Vendor Docker env file already exists: {env_path}")
         print("Use --force to overwrite it.")
         return 0
@@ -2367,7 +2457,10 @@ def handle_docker_init(args: argparse.Namespace) -> int:
         payload = _vendor_docker_payload(enable_hla4_preview=getattr(args, "enable_hla4_preview", False))
         if args.force and env_path.exists():
             env_path.unlink()
+        if args.force and build_root.exists():
+            shutil.rmtree(build_root)
         _copy_vendor_settings(Path(payload["PITCH_PRTI_HOME"]), settings_root)
+        _copy_vendor_docker_context(Path(payload["PITCH_PRTI_HOME"]), build_root)
         if getattr(args, "enable_hla4_preview", False):
             _set_settings_value(_vendor_crc_settings_path(), "CRC.enableHla4PreviewFeatures", "true")
         _write_docker_env_file(env_path, payload)
@@ -2377,6 +2470,7 @@ def handle_docker_init(args: argparse.Namespace) -> int:
 
     print(f"Wrote vendor Docker env file: {env_path}")
     print(f"Wrote vendor settings overlay: {settings_root}")
+    print(f"Wrote vendor Docker build context: {build_root}")
     for key, value in payload.items():
         print(f"  {key}={value}")
     return 0
@@ -2398,6 +2492,23 @@ def _vendor_docker_compose_command(action: str) -> list[str]:
     return command
 
 
+def _vendor_docker_wait_for_port(host: str, port: int, *, timeout_seconds: float = 60.0, interval_seconds: float = 1.0) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=2.0):
+                return True
+        except OSError:
+            time.sleep(interval_seconds)
+    return False
+
+
+def _vendor_docker_smoke_check() -> tuple[bool, str]:
+    if _vendor_docker_wait_for_port("127.0.0.1", 8989):
+        return True, "Vendor CRC is reachable on 127.0.0.1:8989."
+    return False, "Vendor CRC did not become reachable on 127.0.0.1:8989 within the timeout."
+
+
 def handle_docker_up(args: argparse.Namespace) -> int:
     try:
         command = _vendor_docker_compose_command("up -d --build pitch-crc")
@@ -2405,7 +2516,14 @@ def handle_docker_up(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 1
     completed = subprocess.run(command, check=False)
-    return int(completed.returncode)
+    if completed.returncode != 0:
+        return int(completed.returncode)
+    smoke_ok, smoke_detail = _vendor_docker_smoke_check()
+    if not smoke_ok:
+        print(smoke_detail, file=sys.stderr)
+        return 1
+    print(smoke_detail)
+    return 0
 
 
 def handle_docker_down(args: argparse.Namespace) -> int:
@@ -2423,6 +2541,7 @@ def handle_docker_status(args: argparse.Namespace) -> int:
     print(f"  pRTI home: {_vendor_docker_install_root() or 'missing'}")
     print(f"  env file: {_vendor_docker_env_path()}")
     print(f"  vendor settings overlay: {_vendor_docker_settings_root()}")
+    print(f"  vendor build context: {_vendor_docker_build_root()}")
     print(f"  compose file: {VENDOR_DOCKER_COMPOSE_PATH}")
     initialized = _vendor_docker_env_path().exists() and _vendor_docker_settings_root().exists()
     print(f"  initialized: {'yes' if initialized else 'no'}")
@@ -2509,6 +2628,13 @@ def handle_assets_import(args: argparse.Namespace) -> int:
         print("Copied:")
         for path in copied:
             print(f"  - {path}")
+
+    manifest_path = _write_installer_checksum_manifest(dest_root)
+    tracked = _checksum_tracked_artifact_paths(dest_root)
+    if tracked:
+        print(f"Wrote checksum manifest: {manifest_path}")
+    else:
+        print(f"No checksum-tracked artifacts were found in {dest_root}; manifest left empty.")
     return 0
 
 
@@ -2533,6 +2659,7 @@ def _stage_assets_for_setup(source_root: str | None, force: bool) -> None:
         print(f"Staged {len(copied)} file(s) into {dest_root}")
     if skipped:
         print(f"Already staged {len(skipped)} file(s) in {dest_root}")
+    _write_installer_checksum_manifest(dest_root)
 
 
 def _download_contact_path() -> Path:
