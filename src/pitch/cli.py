@@ -337,6 +337,9 @@ def _print_route_visibility(*, include_wsl_distros: bool = False) -> None:
         if distros:
             print(f"  WSL distros: {', '.join(distros)}")
             print("  WSL default: the configured default distro unless --wsl-distro is set")
+            selected = _route_context_detail()
+            if selected:
+                print(f"  WSL selected: {selected}")
         else:
             print("  WSL distros: none detected")
 

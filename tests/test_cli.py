@@ -429,6 +429,8 @@ def test_route_show_reports_available_routes(monkeypatch, capsys) -> None:
 
     monkeypatch.setattr(pitch_cli.shutil, "which", _fake_which)
     monkeypatch.setattr(pitch_cli, "_wsl_distribution_names", lambda: ["Ubuntu", "Debian"])
+    monkeypatch.setenv("PITCH_ROUTE_CONTEXT", "wsl")
+    monkeypatch.setenv("PITCH_WSL_DISTRO", "Ubuntu")
 
     assert main(["route", "show"]) == 0
     captured = capsys.readouterr()
@@ -437,6 +439,7 @@ def test_route_show_reports_available_routes(monkeypatch, capsys) -> None:
     assert "docker" in captured.out
     assert "WSL distros: Ubuntu, Debian" in captured.out
     assert "WSL default: the configured default distro unless --wsl-distro is set" in captured.out
+    assert "WSL selected: Ubuntu" in captured.out
     assert "recommended: wsl - Windows prefers WSL when it is available." in captured.out
 
 
