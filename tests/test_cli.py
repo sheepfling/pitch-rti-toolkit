@@ -409,6 +409,82 @@ def test_wsl_search_roots_include_windows_profile_downloads(monkeypatch, tmp_pat
     assert translated_profile / "Downloads" in roots
 
 
+def test_route_show_reports_available_routes(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Windows")
+
+    def _fake_which(name: str):
+        if name == "wsl.exe":
+            return r"C:\Windows\System32\wsl.exe"
+        if name == "docker":
+            return r"C:\Program Files\Docker\docker.exe"
+        return None
+
+    monkeypatch.setattr(pitch_cli.shutil, "which", _fake_which)
+
+    assert main(["route", "show"]) == 0
+    captured = capsys.readouterr()
+    assert "native" in captured.out
+    assert "wsl" in captured.out
+    assert "docker" in captured.out
+    assert "Default recommendation: wsl" in captured.out
+
+
+def test_route_run_native_delegates_to_main(monkeypatch) -> None:
+    captured = {}
+
+    def _fake_main(argv):
+        captured["argv"] = argv
+        return 7
+
+    monkeypatch.setattr(pitch_cli, "main", _fake_main)
+
+    assert main(["route", "run", "native", "verify"]) == 7
+    assert captured["argv"] == ["verify"]
+
+
+def test_route_run_wsl_translates_windows_paths(monkeypatch) -> None:
+    monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"C:\Windows\System32\wsl.exe" if name == "wsl.exe" else None)
+
+    captured = {}
+
+    class _Result:
+        returncode = 0
+
+    def _fake_run(command, check=False):
+        captured["command"] = command
+        return _Result()
+
+    monkeypatch.setattr(pitch_cli.subprocess, "run", _fake_run)
+
+    assert main(["route", "run", "wsl", "setup", "--source", r"C:\Users\peanu\Downloads\pitch"]) == 0
+    command = captured["command"]
+    assert command[0] == "wsl.exe"
+    assert command[1:4] == ["--cd", "/mnt/c/Users/peanu/GIT/sheepfling/pitch-rti-toolkit", "bash"]
+    assert "/mnt/c/Users/peanu/Downloads/pitch" in command[-1]
+
+
+def test_route_run_docker_builds_container_command(monkeypatch) -> None:
+    monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"C:\Program Files\Docker\docker.exe" if name == "docker" else None)
+
+    captured = {}
+
+    class _Result:
+        returncode = 0
+
+    def _fake_run(command, check=False):
+        captured["command"] = command
+        return _Result()
+
+    monkeypatch.setattr(pitch_cli.subprocess, "run", _fake_run)
+
+    assert main(["route", "run", "docker", "verify"]) == 0
+    command = captured["command"]
+    assert command[0] == "docker"
+    assert "python:3.12" in command
+    assert command[command.index("sh")] == "sh"
+
+
 def test_setup_reports_the_installer_drop_root(monkeypatch, tmp_path, capsys) -> None:
     empty_search_root = tmp_path / "empty"
     empty_search_root.mkdir()

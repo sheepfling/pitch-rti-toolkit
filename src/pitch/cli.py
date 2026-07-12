@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import platform
+import shlex
 import re
 import shutil
 import subprocess
@@ -104,6 +105,13 @@ class InstallSpec:
     key: str
     label: str
     path: Path
+
+
+@dataclass(frozen=True)
+class RouteSpec:
+    name: str
+    label: str
+    description: str
 
 
 COMMON_REQUIRED_PATHS = [
@@ -263,6 +271,113 @@ def _coerce_env_path(value: str) -> Path:
     return Path(value).expanduser()
 
 
+def _route_specs() -> list[RouteSpec]:
+    return [
+        RouteSpec("native", "Native", "Run directly on the current operating system."),
+        RouteSpec("wsl", "WSL", "Run through WSL on Windows with Linux installers and Linux launcher discovery."),
+        RouteSpec("docker", "Docker", "Run inside a Linux container for a portable Linux route."),
+    ]
+
+
+def _route_available(route_name: str) -> bool:
+    if route_name == "native":
+        return True
+    if route_name == "wsl":
+        return platform.system() == "Windows" and shutil.which("wsl.exe") is not None
+    if route_name == "docker":
+        return shutil.which("docker") is not None
+    return False
+
+
+def _default_route_name() -> str:
+    if platform.system() == "Windows" and _route_available("wsl"):
+        return "wsl"
+    if _route_available("docker"):
+        return "docker"
+    return "native"
+
+
+def _route_summary(route_name: str) -> str:
+    if route_name == "native":
+        return "Direct host execution."
+    if route_name == "wsl":
+        return "Windows host -> WSL Linux shell."
+    if route_name == "docker":
+        return "Containerized Linux execution."
+    return "Unknown route."
+
+
+def _wsl_command_path(path: Path) -> str:
+    value = str(path)
+    if _looks_like_windows_path(value):
+        return _translate_windows_path(value).as_posix()
+    return Path(value).as_posix()
+
+
+def _quote_posix_args(args: list[str]) -> str:
+    return shlex.join(args)
+
+
+def _translate_route_args_for_wsl(pitch_args: list[str]) -> list[str]:
+    translated: list[str] = []
+    for arg in pitch_args:
+        if _looks_like_windows_path(arg):
+            translated.append(_wsl_command_path(_translate_windows_path(arg)))
+        else:
+            translated.append(arg)
+    return translated
+
+
+def _route_payload_command(pitch_args: list[str], route_name: str) -> list[str]:
+    if route_name == "native":
+        return []
+
+    if route_name == "wsl":
+        pitch_args = _translate_route_args_for_wsl(pitch_args)
+
+    install_command = _quote_posix_args(["python3", "-m", "pip", "install", "-e", "."])
+    run_command = _quote_posix_args(["python3", "-m", "pitch", *pitch_args]) if pitch_args else _quote_posix_args(["python3", "-m", "pitch"])
+    shell_command = f"{install_command} && {run_command}"
+    if route_name == "wsl":
+        return [
+            "wsl.exe",
+            "--cd",
+            _wsl_command_path(ROOT),
+            "bash",
+            "-lc",
+            shell_command,
+        ]
+
+    volume = f"{ROOT}:/work"
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "-i",
+        "-v",
+        volume,
+        "-w",
+        "/work",
+        "python:3.12",
+        "sh",
+        "-lc",
+        shell_command,
+    ]
+
+
+def _run_route_command(route_name: str, pitch_args: list[str]) -> int:
+    if route_name == "native":
+        return main(pitch_args)
+
+    if not _route_available(route_name):
+        print(f"Route '{route_name}' is not available on this machine.", file=sys.stderr)
+        return 1
+
+    command = _route_payload_command(pitch_args, route_name)
+    completed = subprocess.run(command, check=False)
+    return int(completed.returncode)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pitch", description="Pitch HLA starter bundle CLI.")
     subparsers = parser.add_subparsers(dest="command")
@@ -361,6 +476,18 @@ def build_parser() -> argparse.ArgumentParser:
     download_submit_parser.add_argument("--newsletter", action="store_true", help="Subscribe the contact to the Pitch newsletter.")
     download_submit_parser.add_argument("--dry-run", action="store_true", help="Print the submission payload without sending it.")
     download_submit_parser.set_defaults(handler=handle_download_submit)
+
+    route_parser = subparsers.add_parser("route", help="Inspect or run Pitch commands through native, WSL, or Docker routes.")
+    route_subparsers = route_parser.add_subparsers(dest="route_command")
+    route_parser.set_defaults(handler=handle_route)
+
+    route_show_parser = route_subparsers.add_parser("show", help="Show the available routes and the default recommendation.")
+    route_show_parser.set_defaults(handler=handle_route_show)
+
+    route_run_parser = route_subparsers.add_parser("run", help="Run a Pitch command through a selected route.")
+    route_run_parser.add_argument("route", choices=["native", "wsl", "docker", "auto"], help="Route to use for the command.")
+    route_run_parser.add_argument("pitch_args", nargs=argparse.REMAINDER, help="Pitch command and arguments to run.")
+    route_run_parser.set_defaults(handler=handle_route_run)
 
     start_parser = subparsers.add_parser("start", help="Open the interactive launcher menu or a direct target.")
     start_parser.add_argument(
@@ -957,6 +1084,11 @@ def handle_probe(args: argparse.Namespace) -> int:
 
 def handle_doctor(args: argparse.Namespace) -> int:
     _print_python_workflow()
+    print("Route options:")
+    for spec in _route_specs():
+        availability = "available" if _route_available(spec.name) else "unavailable"
+        print(f"  {spec.name}: {availability} - {spec.description}")
+    print(f"  recommended: {_default_route_name()}")
     print("Detected install roots:")
     print(f"Writable asset root: {resolve_installer_drop_root()}")
 
@@ -1749,6 +1881,33 @@ def handle_start(args: argparse.Namespace) -> int:
         if args.strict_probe and not all(open_ for _, open_ in results):
             raise RuntimeError("One or more configured ports are closed.")
     return 0
+
+
+def handle_route(args: argparse.Namespace) -> int:
+    if getattr(args, "route_command", None) is None:
+        return handle_route_show(args)
+    return int(args.handler(args))
+
+
+def handle_route_show(args: argparse.Namespace) -> int:
+    print("Available routes:")
+    for spec in _route_specs():
+        available = "available" if _route_available(spec.name) else "unavailable"
+        print(f"  - {spec.name}: {spec.description} [{available}]")
+    print(f"Default recommendation: {_default_route_name()}")
+    return 0
+
+
+def handle_route_run(args: argparse.Namespace) -> int:
+    pitch_args = list(args.pitch_args or [])
+    if pitch_args and pitch_args[0] == "--":
+        pitch_args = pitch_args[1:]
+
+    route_name = args.route
+    if route_name == "auto":
+        route_name = _default_route_name()
+
+    return _run_route_command(route_name, pitch_args)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -83,6 +83,17 @@ To stage a folder and run setup in one step:
 python -m pitch setup --source C:\\Users\\you\\Downloads\\pitch
 ```
 
+If you want to choose an execution route explicitly, use:
+
+```bash
+pitch route show
+pitch route run native setup
+pitch route run wsl setup
+pitch route run docker setup
+```
+
+`native` runs directly on the host OS, `wsl` runs the command through WSL on Windows, and `docker` runs it in a Linux container.
+
 ## Pitch Free-Download Form
 
 Pitch’s free-download page still expects a contact form to be filled out before the bundle is sent.
