@@ -234,6 +234,66 @@ def test_rti_smoke_starts_the_console_and_reads_help(monkeypatch, capsys, tmp_pa
     assert captured["timeout"] == 30
 
 
+def test_rti_smoke_chat_lists_discovered_variants(monkeypatch, capsys, tmp_path) -> None:
+    launcher = tmp_path / "chat-java-hla4" / "chat-java-hla4.bat"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("@echo off\n", encoding="utf-8")
+
+    monkeypatch.setattr(pitch_cli, "_discover_chat_sample_launcher", lambda variant=None: (variant or "java-hla4", launcher) if variant in {"java-hla4", "java-hla4-fedpro"} else None)
+
+    assert main(["rti", "smoke", "chat", "--list"]) == 0
+    captured = capsys.readouterr()
+    assert "Available chat sample variants:" in captured.out
+    assert "java-hla4:" in captured.out
+
+
+def test_rti_smoke_chat_runs_two_federates(monkeypatch, capsys, tmp_path) -> None:
+    launcher = tmp_path / "chat-java-hla4" / "chat-java-hla4.bat"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("@echo off\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        pitch_cli,
+        "_discover_chat_sample_launcher",
+        lambda variant=None: ("java-hla4", launcher) if variant in {None, "auto", "java-hla4", "java-hla4-fedpro", "cpp-hla4"} else None,
+    )
+
+    launched = []
+
+    class _Process:
+        def __init__(self, command, cwd=None, stdin=None, stdout=None, stderr=None, text=None):
+            self.command = command
+            self.cwd = cwd
+            self.returncode = 0
+            self._input = ""
+
+        def communicate(self, input=None, timeout=None):
+            self._input = input or ""
+            return (
+                "Type messages you want to send.\n> \n",
+                "",
+            )
+
+        def kill(self):
+            return None
+
+    def _fake_popen(command, cwd=None, stdin=None, stdout=None, stderr=None, text=None):
+        proc = _Process(command, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, text=text)
+        launched.append(proc)
+        return proc
+
+    monkeypatch.setattr(pitch_cli.subprocess, "Popen", _fake_popen)
+
+    assert main(["rti", "smoke", "chat"]) == 0
+    captured = capsys.readouterr()
+    assert "Chat smoke variant: java-hla4" in captured.out
+    assert "Pitch chat smoke test passed." in captured.out
+    assert len(launched) == 2
+    assert launched[0].command[0] in {"cmd.exe", str(launcher)}
+    assert "pitch-smoke-alpha" in launched[0]._input
+    assert "pitch-smoke-bravo" in launched[1]._input
+
+
 def test_setup_can_stage_from_a_source_folder(monkeypatch, tmp_path, capsys) -> None:
     source_root = tmp_path / "pitch-download"
     nested_root = source_root / "bundle"

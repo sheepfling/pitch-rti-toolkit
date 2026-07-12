@@ -127,6 +127,13 @@ pitch settings show
 ```
 
 You can also run the automated smoke test with `pitch rti smoke`.
+To try two chat federates against the installed RTI, use:
+
+```bash
+pitch rti smoke chat
+```
+
+That command prefers the Java HLA 4 chat sample by default, but `pitch rti smoke chat --list` will show the discovered `java-hla4`, `java-hla4-fedpro`, and `cpp-hla4` variants when they are present.
 To include that check in the normal verification flow, run `pitch verify --rti-smoke`.
 
 ## Pitch Free-Download Form

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import platform
@@ -63,6 +64,20 @@ CRC_SETTINGS_NAME_HINTS = (
     "PitchCRC.settings",
     "CRC.settings",
 )
+CHAT_SAMPLE_VARIANTS = {
+    "java-hla4": (
+        "chat-java-hla4/chat-java-hla4.bat",
+        "chat-java-hla4/chat-java-hla4.cmd",
+    ),
+    "java-hla4-fedpro": (
+        "chat-java-hla4-fedpro/chat-java-hla4-fedpro.bat",
+        "chat-java-hla4-fedpro/chat-java-hla4-fedpro.cmd",
+    ),
+    "cpp-hla4": (
+        "chat-cpp-hla4/chat-cpp-hla4_vc140_32.exe",
+        "chat-cpp-hla4/chat-cpp-hla4_vc140_64.exe",
+    ),
+}
 DOWNLOAD_CONTACT_DEFAULTS = {
     "first_name": "John",
     "last_name": "Doe",
@@ -794,7 +809,18 @@ def build_parser() -> argparse.ArgumentParser:
     rti_parser.set_defaults(handler=handle_rti)
 
     rti_smoke_parser = rti_subparsers.add_parser("smoke", help="Launch the installed RTI console and verify it answers HELP.")
+    rti_smoke_subparsers = rti_smoke_parser.add_subparsers(dest="smoke_command")
     rti_smoke_parser.set_defaults(handler=handle_rti_smoke)
+
+    rti_smoke_chat_parser = rti_smoke_subparsers.add_parser("chat", help="Launch two chat federates against the installed RTI.")
+    rti_smoke_chat_parser.add_argument(
+        "--variant",
+        choices=["auto", "java-hla4", "java-hla4-fedpro", "cpp-hla4"],
+        default="auto",
+        help="Choose which chat sample family to use.",
+    )
+    rti_smoke_chat_parser.add_argument("--list", action="store_true", help="List the discovered chat sample variants and exit.")
+    rti_smoke_chat_parser.set_defaults(handler=handle_rti_smoke_chat)
 
     start_parser = subparsers.add_parser("start", help="Open the interactive launcher menu or a direct target.")
     start_parser.add_argument(
@@ -1565,6 +1591,136 @@ def _discover_installed_runtime_launcher(component_key: str) -> Path | None:
             return launcher
 
     return None
+
+
+def _discover_prti_install_root() -> Path | None:
+    configured_roots = _configured_install_roots()
+    configured_root = configured_roots.get("prti1516e")
+    if configured_root is not None and configured_root.exists():
+        return configured_root
+
+    launcher = _discover_installed_runtime_launcher("prti1516e")
+    if launcher is None:
+        return None
+
+    if launcher.parent.name.lower() == "bin":
+        return launcher.parent.parent
+    return launcher.parent
+
+
+def _discover_chat_sample_launcher(variant: str | None = None) -> tuple[str, Path] | None:
+    install_root = _discover_prti_install_root()
+    if install_root is None:
+        return None
+
+    samples_root = install_root / "samples"
+    if not samples_root.exists():
+        return None
+
+    variants = [variant] if variant and variant != "auto" else ["java-hla4", "java-hla4-fedpro", "cpp-hla4"]
+    for selected_variant in variants:
+        candidates = CHAT_SAMPLE_VARIANTS.get(selected_variant)
+        if not candidates:
+            continue
+        for relative_path in candidates:
+            matches = discover_file_locations(Path(relative_path).name, [samples_root], max_depth=4)
+            for match in matches:
+                if match.parent.as_posix().endswith(Path(relative_path).parent.as_posix()):
+                    return selected_variant, match
+    return None
+
+
+def _chat_sample_choices() -> list[str]:
+    discovered: list[str] = []
+    for variant in ("java-hla4", "java-hla4-fedpro", "cpp-hla4"):
+        if _discover_chat_sample_launcher(variant) is not None:
+            discovered.append(variant)
+    return discovered
+
+
+def _chat_launcher_command(launcher: Path) -> list[str]:
+    if platform.system() == "Windows" and launcher.suffix.lower() in {".bat", ".cmd"}:
+        return ["cmd.exe", "/c", str(launcher)]
+    return [str(launcher)]
+
+
+def _run_chat_process(command: list[str], *, cwd: Path, username: str, host: str, message: str, final_message: str = ".") -> tuple[int, str]:
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=str(cwd),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except OSError as exc:
+        raise RuntimeError(f"Could not start chat sample: {exc}") from exc
+
+    stdin_payload = f"{host}\n{username}\n{message}\n{final_message}\n"
+    try:
+        output, _ = process.communicate(stdin_payload, timeout=90)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        output, _ = process.communicate()
+        raise RuntimeError(f"Timed out while running chat sample: {command[0]}") from None
+
+    return int(process.returncode or 0), output
+
+
+def _run_chat_smoke_test(variant: str = "auto", *, list_only: bool = False) -> int:
+    if list_only:
+        print("Available chat sample variants:")
+        for choice in _chat_sample_choices():
+            launcher = _discover_chat_sample_launcher(choice)
+            if launcher is None:
+                continue
+            _, path = launcher
+            print(f"  {choice}: {path}")
+        return 0
+
+    discovered = _discover_chat_sample_launcher(variant)
+    if discovered is None:
+        choices = _chat_sample_choices()
+        if choices:
+            print("No matching chat sample launcher was found for the requested variant.", file=sys.stderr)
+            print(f"Available chat sample variants: {', '.join(choices)}", file=sys.stderr)
+        else:
+            print("No chat sample launcher was found under the installed pRTI samples.", file=sys.stderr)
+        return 1
+
+    chosen_variant, launcher = discovered
+    print(f"Chat smoke variant: {chosen_variant}")
+    print(f"Chat sample launcher: {launcher}")
+    command = _chat_launcher_command(launcher)
+    host = os.environ.get("PITCH_RTI_SMOKE_HOST", "localhost")
+    messages = [
+        ("pitch-smoke-alpha", "Hello from pitch-smoke-alpha"),
+        ("pitch-smoke-bravo", "Hello from pitch-smoke-bravo"),
+    ]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(_run_chat_process, command, cwd=launcher.parent, username=username, host=host, message=message)
+            for username, message in messages
+        ]
+        results = [future.result() for future in futures]
+
+    failures: list[str] = []
+    for index, (returncode, output) in enumerate(results, start=1):
+        if returncode != 0:
+            failures.append(f"chat federate {index} exited with {returncode}")
+        elif "Type messages you want to send" not in output:
+            failures.append(f"chat federate {index} did not reach the chat prompt")
+
+    if failures:
+        print("Pitch chat smoke test failed.", file=sys.stderr)
+        for failure in failures:
+            print(f"  - {failure}", file=sys.stderr)
+        return 1
+
+    print("Pitch chat smoke test passed.")
+    return 0
 
 
 def _start_actions() -> list[StartAction]:
@@ -2760,7 +2916,13 @@ def handle_rti(args: argparse.Namespace) -> int:
 
 
 def handle_rti_smoke(args: argparse.Namespace) -> int:
+    if getattr(args, "smoke_command", None) == "chat":
+        return int(args.handler(args))
     return _run_rti_smoke_test()
+
+
+def handle_rti_smoke_chat(args: argparse.Namespace) -> int:
+    return _run_chat_smoke_test(getattr(args, "variant", "auto"), list_only=getattr(args, "list", False))
 
 
 def main(argv: list[str] | None = None) -> int:
