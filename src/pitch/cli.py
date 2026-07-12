@@ -859,6 +859,11 @@ def build_parser() -> argparse.ArgumentParser:
     docker_down_parser = docker_subparsers.add_parser("down", help="Stop the vendor pRTI container with Docker Compose.")
     docker_down_parser.set_defaults(handler=handle_docker_down)
 
+    docker_smoke_parser = docker_subparsers.add_parser("smoke", help="Check whether the vendor CRC is reachable on its RTI port.")
+    docker_smoke_parser.add_argument("--timeout-seconds", type=float, default=60.0, help="How long to wait for the vendor CRC port to respond.")
+    docker_smoke_parser.add_argument("--interval-seconds", type=float, default=1.0, help="How long to sleep between reachability checks.")
+    docker_smoke_parser.set_defaults(handler=handle_docker_smoke)
+
     docker_status_parser = docker_subparsers.add_parser("status", help="Show the vendor Docker setup paths.")
     docker_status_parser.set_defaults(handler=handle_docker_status)
 
@@ -2503,8 +2508,8 @@ def _vendor_docker_wait_for_port(host: str, port: int, *, timeout_seconds: float
     return False
 
 
-def _vendor_docker_smoke_check() -> tuple[bool, str]:
-    if _vendor_docker_wait_for_port("127.0.0.1", 8989):
+def _vendor_docker_smoke_check(*, timeout_seconds: float = 60.0, interval_seconds: float = 1.0) -> tuple[bool, str]:
+    if _vendor_docker_wait_for_port("127.0.0.1", 8989, timeout_seconds=timeout_seconds, interval_seconds=interval_seconds):
         return True, "Vendor CRC is reachable on 127.0.0.1:8989."
     return False, "Vendor CRC did not become reachable on 127.0.0.1:8989 within the timeout."
 
@@ -2524,6 +2529,15 @@ def handle_docker_up(args: argparse.Namespace) -> int:
         return 1
     print(smoke_detail)
     return 0
+
+
+def handle_docker_smoke(args: argparse.Namespace) -> int:
+    smoke_ok, smoke_detail = _vendor_docker_smoke_check(
+        timeout_seconds=getattr(args, "timeout_seconds", 60.0),
+        interval_seconds=getattr(args, "interval_seconds", 1.0),
+    )
+    print(smoke_detail)
+    return 0 if smoke_ok else 1
 
 
 def handle_docker_down(args: argparse.Namespace) -> int:

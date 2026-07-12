@@ -119,6 +119,7 @@ pitch docker init
 pitch docker init --enable-hla4-preview
 pitch docker status
 pitch docker up
+pitch docker smoke
 pitch docker down
 ```
 

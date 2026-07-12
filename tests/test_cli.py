@@ -1116,6 +1116,23 @@ def test_docker_up_builds_the_vendor_compose_command(monkeypatch, tmp_path) -> N
     assert command[6:10] == ["up", "-d", "--build", "pitch-crc"]
 
 
+def test_docker_smoke_reports_reachability(monkeypatch, capsys) -> None:
+    captured = {}
+
+    def _fake_smoke_check(*, timeout_seconds=60.0, interval_seconds=1.0):
+        captured["timeout_seconds"] = timeout_seconds
+        captured["interval_seconds"] = interval_seconds
+        return True, "Vendor CRC is reachable on 127.0.0.1:8989."
+
+    monkeypatch.setattr(pitch_cli, "_vendor_docker_smoke_check", _fake_smoke_check)
+
+    assert main(["docker", "smoke", "--timeout-seconds", "12.5", "--interval-seconds", "0.25"]) == 0
+    captured_out = capsys.readouterr()
+    assert "Vendor CRC is reachable on 127.0.0.1:8989." in captured_out.out
+    assert captured["timeout_seconds"] == 12.5
+    assert captured["interval_seconds"] == 0.25
+
+
 def test_start_prti1516e_prints_the_settings_summary(monkeypatch, capsys) -> None:
     monkeypatch.setattr(pitch_cli, "_print_crc_settings_summary", lambda: print("CRC settings discovery:"))
     monkeypatch.setattr(pitch_cli, "_run_start_action", lambda *args, **kwargs: None)
