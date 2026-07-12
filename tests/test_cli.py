@@ -120,6 +120,47 @@ def test_run_installer_uses_plain_quiet_flag(monkeypatch, tmp_path) -> None:
     assert captured["cwd"] == str(tmp_path)
 
 
+def test_rti_smoke_starts_the_console_and_reads_help(monkeypatch, capsys, tmp_path) -> None:
+    launcher = tmp_path / "pRTI1516e-nogui.bat"
+    launcher.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(pitch_cli, "_discover_installed_runtime_launcher", lambda component_key: launcher if component_key == "prti1516e" else None)
+
+    captured = {}
+
+    class _Process:
+        def communicate(self, input=None, timeout=None):
+            captured["input"] = input
+            captured["timeout"] = timeout
+            return (
+                "RTIexec for Pitch pRTI(tm) Free v5.5.10 build 9905 for IEEE 1516-2010\n"
+                "Type HELP for help\n"
+                "pRTI> Available commands:\n"
+                "  HELP\n"
+                "  QUIT\n",
+                "",
+            )
+
+        def kill(self):
+            captured["killed"] = True
+
+    def _fake_popen(command, cwd=None, stdin=None, stdout=None, stderr=None, text=None):
+        captured["command"] = command
+        captured["cwd"] = cwd
+        return _Process()
+
+    monkeypatch.setattr(pitch_cli.subprocess, "Popen", _fake_popen)
+
+    assert main(["rti", "smoke"]) == 0
+    captured_out = capsys.readouterr()
+    assert "Pitch RTI smoke test passed." in captured_out.out
+    assert captured["command"][0:2] == ["cmd.exe", "/c"]
+    assert captured["command"][2] == str(launcher)
+    assert captured["cwd"] == str(launcher.parent)
+    assert captured["input"] == "HELP\n"
+    assert captured["timeout"] == 30
+
+
 def test_setup_can_stage_from_a_source_folder(monkeypatch, tmp_path, capsys) -> None:
     source_root = tmp_path / "pitch-download"
     nested_root = source_root / "bundle"

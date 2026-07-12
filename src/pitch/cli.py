@@ -674,6 +674,13 @@ def build_parser() -> argparse.ArgumentParser:
     route_run_parser.add_argument("pitch_args", nargs=argparse.REMAINDER, help="Pitch command and arguments to run.")
     route_run_parser.set_defaults(handler=handle_route_run)
 
+    rti_parser = subparsers.add_parser("rti", help="Run RTI-specific checks.")
+    rti_subparsers = rti_parser.add_subparsers(dest="rti_command")
+    rti_parser.set_defaults(handler=handle_rti)
+
+    rti_smoke_parser = rti_subparsers.add_parser("smoke", help="Launch the installed RTI console and verify it answers HELP.")
+    rti_smoke_parser.set_defaults(handler=handle_rti_smoke)
+
     start_parser = subparsers.add_parser("start", help="Open the interactive launcher menu or a direct target.")
     start_parser.add_argument(
         "target",
@@ -1169,6 +1176,45 @@ def _run_start_action(action: StartAction, args: argparse.Namespace) -> None:
         launch_env["PITCH_PORTS_CONFIG"] = str((ROOT / args.ports_config).resolve() if not Path(args.ports_config).is_absolute() else Path(args.ports_config))
 
     _launch_program(launcher, env=launch_env)
+
+
+def _run_rti_smoke_test() -> int:
+    launcher = _discover_installed_runtime_launcher("prti1516e")
+    if launcher is None:
+        print("No installed Pitch RTI launcher was found.", file=sys.stderr)
+        return 1
+
+    if platform.system() == "Windows" and launcher.suffix.lower() in {".bat", ".cmd"}:
+        command = ["cmd.exe", "/c", str(launcher)]
+    else:
+        command = [str(launcher)]
+
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=str(launcher.parent),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        try:
+            output, _ = process.communicate("HELP\n", timeout=30)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            output, _ = process.communicate()
+    except OSError as exc:
+        print(f"Could not start the Pitch RTI launcher: {exc}", file=sys.stderr)
+        return 1
+
+    if "Available commands:" in output and "HELP" in output:
+        print("Pitch RTI smoke test passed.")
+        return 0
+
+    print("Pitch RTI smoke test failed.", file=sys.stderr)
+    if output:
+        print(output, file=sys.stderr)
+    return 1
 
 
 def handle_setup(args: argparse.Namespace) -> int:
@@ -2107,6 +2153,17 @@ def handle_route_run(args: argparse.Namespace) -> int:
         route_name = _default_route_name()
 
     return _run_route_command(route_name, pitch_args, wsl_distro=getattr(args, "wsl_distro", None))
+
+
+def handle_rti(args: argparse.Namespace) -> int:
+    if getattr(args, "rti_command", None) is None:
+        print("Usage: pitch rti smoke")
+        return 0
+    return int(args.handler(args))
+
+
+def handle_rti_smoke(args: argparse.Namespace) -> int:
+    return _run_rti_smoke_test()
 
 
 def main(argv: list[str] | None = None) -> int:
