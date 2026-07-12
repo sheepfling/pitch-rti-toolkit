@@ -307,12 +307,19 @@ def _route_summary(route_name: str) -> str:
     return "Unknown route."
 
 
-def _print_route_visibility() -> None:
+def _print_route_visibility(*, include_wsl_distros: bool = False) -> None:
     print("Route options:")
     for spec in _route_specs():
         availability = "available" if _route_available(spec.name) else "unavailable"
         print(f"  {spec.name}: {availability} - {spec.description}")
     print(f"  recommended: {_default_route_name()}")
+    if include_wsl_distros:
+        distros = _wsl_distribution_names()
+        if distros:
+            print(f"  WSL distros: {', '.join(distros)}")
+            print("  WSL default: the configured default distro unless --wsl-distro is set")
+        else:
+            print("  WSL distros: none detected")
 
 
 def _route_context_name() -> str | None:
@@ -320,11 +327,22 @@ def _route_context_name() -> str | None:
     return value or None
 
 
+def _route_context_detail() -> str | None:
+    if _route_context_name() != "wsl":
+        return None
+    distro = os.environ.get("PITCH_WSL_DISTRO", "").strip()
+    return distro or None
+
+
 def _print_active_route_banner() -> None:
     route_name = _route_context_name()
     if route_name in {"wsl", "docker"}:
         label = route_name.upper()
-        print(f"Selected route: {label} ({_route_summary(route_name)})")
+        detail = _route_context_detail()
+        if detail:
+            print(f"Selected route: {label} ({detail}; {_route_summary(route_name)})")
+        else:
+            print(f"Selected route: {label} ({_route_summary(route_name)})")
 
 
 def _wsl_command_path(path: Path) -> str:
@@ -338,6 +356,24 @@ def _quote_posix_args(args: list[str]) -> str:
     return shlex.join(args)
 
 
+def _wsl_distribution_names() -> list[str]:
+    if platform.system() != "Windows" or shutil.which("wsl.exe") is None:
+        return []
+
+    try:
+        completed = subprocess.run(["wsl.exe", "-l", "-q"], check=False, capture_output=True, text=True)
+    except OSError:
+        return []
+
+    output = getattr(completed, "stdout", "") or ""
+    names: list[str] = []
+    for raw_line in output.splitlines():
+        name = raw_line.strip().lstrip("*").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def _translate_route_args_for_wsl(pitch_args: list[str]) -> list[str]:
     translated: list[str] = []
     for arg in pitch_args:
@@ -348,7 +384,7 @@ def _translate_route_args_for_wsl(pitch_args: list[str]) -> list[str]:
     return translated
 
 
-def _route_payload_command(pitch_args: list[str], route_name: str) -> list[str]:
+def _route_payload_command(pitch_args: list[str], route_name: str, wsl_distro: str | None = None) -> list[str]:
     if route_name == "native":
         return []
 
@@ -359,14 +395,17 @@ def _route_payload_command(pitch_args: list[str], route_name: str) -> list[str]:
     run_command = _quote_posix_args(["python3", "-m", "pitch", *pitch_args]) if pitch_args else _quote_posix_args(["python3", "-m", "pitch"])
     shell_command = f"{install_command} && {run_command}"
     if route_name == "wsl":
-        return [
-            "wsl.exe",
+        command = ["wsl.exe"]
+        if wsl_distro:
+            command.extend(["-d", wsl_distro])
+        command.extend([
             "--cd",
             _wsl_command_path(ROOT),
             "bash",
             "-lc",
             shell_command,
-        ]
+        ])
+        return command
 
     volume = f"{ROOT.as_posix()}:/work"
     return [
@@ -385,7 +424,7 @@ def _route_payload_command(pitch_args: list[str], route_name: str) -> list[str]:
     ]
 
 
-def _run_route_command(route_name: str, pitch_args: list[str]) -> int:
+def _run_route_command(route_name: str, pitch_args: list[str], wsl_distro: str | None = None) -> int:
     if route_name == "native":
         return main(pitch_args)
 
@@ -393,17 +432,29 @@ def _run_route_command(route_name: str, pitch_args: list[str]) -> int:
         print(f"Route '{route_name}' is not available on this machine.", file=sys.stderr)
         return 1
 
-    command = _route_payload_command(pitch_args, route_name)
+    if route_name == "wsl" and wsl_distro:
+        available_distros = _wsl_distribution_names()
+        if available_distros and wsl_distro not in available_distros:
+            print(
+                f"WSL distro '{wsl_distro}' is not installed. Available distros: {', '.join(available_distros)}",
+                file=sys.stderr,
+            )
+            return 1
+
+    command = _route_payload_command(pitch_args, route_name, wsl_distro=wsl_distro)
     route_env = os.environ.copy()
-    route_env.update(_route_payload_env(route_name))
+    route_env.update(_route_payload_env(route_name, wsl_distro=wsl_distro))
     completed = subprocess.run(command, check=False, env=route_env)
     return int(completed.returncode)
 
 
-def _route_payload_env(route_name: str) -> dict[str, str]:
+def _route_payload_env(route_name: str, wsl_distro: str | None = None) -> dict[str, str]:
     if route_name not in {"wsl", "docker"}:
         return {}
-    return {"PITCH_ROUTE_CONTEXT": route_name}
+    payload = {"PITCH_ROUTE_CONTEXT": route_name}
+    if route_name == "wsl" and wsl_distro:
+        payload["PITCH_WSL_DISTRO"] = wsl_distro
+    return payload
 
 
 def _build_setup_argv(args: argparse.Namespace, route_name: str = "native") -> list[str]:
@@ -436,6 +487,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--force", action="store_true", help="Rerun installers even if the bundle appears installed.")
     setup_parser.add_argument("--silent-install", action="store_true", help="Try the vendor installers in quiet mode.")
     setup_parser.add_argument("--route", choices=["native", "wsl", "docker", "auto"], default="native", help="Choose how setup is executed.")
+    setup_parser.add_argument("--wsl-distro", help="Select a WSL distribution when route is wsl.")
     setup_parser.add_argument("--ports-config", default=str(ASSET_ROOT / "ports.conf"), help="Port probe configuration file.")
     setup_parser.add_argument("--source", help="Folder to scan and stage into the writable installer cache before setup.")
     setup_parser.set_defaults(handler=handle_setup)
@@ -534,6 +586,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     route_run_parser = route_subparsers.add_parser("run", help="Run a Pitch command through a selected route.")
     route_run_parser.add_argument("route", choices=["native", "wsl", "docker", "auto"], help="Route to use for the command.")
+    route_run_parser.add_argument("--wsl-distro", help="Select a WSL distribution when route is wsl.")
     route_run_parser.add_argument("pitch_args", nargs=argparse.REMAINDER, help="Pitch command and arguments to run.")
     route_run_parser.set_defaults(handler=handle_route_run)
 
@@ -1031,10 +1084,10 @@ def handle_setup(args: argparse.Namespace) -> int:
         route_name = _default_route_name()
 
     selected_route = route_name if route_name != "native" else _route_context_name() or "native"
-    _print_route_visibility()
+    _print_route_visibility(include_wsl_distros=route_name == "wsl")
     print(f"Selected route: {selected_route}")
     if route_name != "native":
-        return _run_route_command(route_name, _build_setup_argv(args, route_name="native"))
+        return _run_route_command(route_name, _build_setup_argv(args, route_name="native"), wsl_distro=getattr(args, "wsl_distro", None))
 
     _stage_assets_for_setup(getattr(args, "source", None), force=args.force)
 
@@ -1947,11 +2000,7 @@ def handle_route(args: argparse.Namespace) -> int:
 
 
 def handle_route_show(args: argparse.Namespace) -> int:
-    print("Available routes:")
-    for spec in _route_specs():
-        available = "available" if _route_available(spec.name) else "unavailable"
-        print(f"  - {spec.name}: {spec.description} [{available}]")
-    print(f"Default recommendation: {_default_route_name()}")
+    _print_route_visibility(include_wsl_distros=True)
     return 0
 
 
@@ -1964,7 +2013,7 @@ def handle_route_run(args: argparse.Namespace) -> int:
     if route_name == "auto":
         route_name = _default_route_name()
 
-    return _run_route_command(route_name, pitch_args)
+    return _run_route_command(route_name, pitch_args, wsl_distro=getattr(args, "wsl_distro", None))
 
 
 def main(argv: list[str] | None = None) -> int:

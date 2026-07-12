@@ -428,13 +428,16 @@ def test_route_show_reports_available_routes(monkeypatch, capsys) -> None:
         return None
 
     monkeypatch.setattr(pitch_cli.shutil, "which", _fake_which)
+    monkeypatch.setattr(pitch_cli, "_wsl_distribution_names", lambda: ["Ubuntu", "Debian"])
 
     assert main(["route", "show"]) == 0
     captured = capsys.readouterr()
     assert "native" in captured.out
     assert "wsl" in captured.out
     assert "docker" in captured.out
-    assert "Default recommendation: wsl" in captured.out
+    assert "WSL distros: Ubuntu, Debian" in captured.out
+    assert "WSL default: the configured default distro unless --wsl-distro is set" in captured.out
+    assert "recommended: wsl" in captured.out
 
 
 def test_route_run_native_delegates_to_main(monkeypatch) -> None:
@@ -453,6 +456,7 @@ def test_route_run_native_delegates_to_main(monkeypatch) -> None:
 def test_route_run_wsl_translates_windows_paths(monkeypatch) -> None:
     monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Windows")
     monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"C:\Windows\System32\wsl.exe" if name == "wsl.exe" else None)
+    monkeypatch.setattr(pitch_cli, "_wsl_distribution_names", lambda: ["Ubuntu", "Debian"])
 
     captured = {}
 
@@ -466,12 +470,38 @@ def test_route_run_wsl_translates_windows_paths(monkeypatch) -> None:
 
     monkeypatch.setattr(pitch_cli.subprocess, "run", _fake_run)
 
-    assert main(["route", "run", "wsl", "setup", "--source", r"C:\Users\peanu\Downloads\pitch"]) == 0
+    assert main(["route", "run", "--wsl-distro", "Ubuntu", "wsl", "setup", "--source", r"C:\Users\peanu\Downloads\pitch"]) == 0
     command = captured["command"]
     assert command[0] == "wsl.exe"
-    assert command[1:4] == ["--cd", "/mnt/c/Users/peanu/GIT/sheepfling/pitch-rti-toolkit", "bash"]
+    assert command[1:4] == ["-d", "Ubuntu", "--cd"]
+    assert command[4:6] == ["/mnt/c/Users/peanu/GIT/sheepfling/pitch-rti-toolkit", "bash"]
     assert "/mnt/c/Users/peanu/Downloads/pitch" in command[-1]
     assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "wsl"
+    assert captured["env"]["PITCH_WSL_DISTRO"] == "Ubuntu"
+
+
+def test_route_run_wsl_uses_default_distribution_when_not_selected(monkeypatch) -> None:
+    monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"C:\Windows\System32\wsl.exe" if name == "wsl.exe" else None)
+
+    captured = {}
+
+    class _Result:
+        returncode = 0
+
+    def _fake_run(command, check=False, env=None):
+        captured["command"] = command
+        captured["env"] = env
+        return _Result()
+
+    monkeypatch.setattr(pitch_cli.subprocess, "run", _fake_run)
+
+    assert main(["route", "run", "wsl", "verify"]) == 0
+    command = captured["command"]
+    assert command[0] == "wsl.exe"
+    assert "-d" not in command
+    assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "wsl"
+    assert "PITCH_WSL_DISTRO" not in captured["env"]
 
 
 def test_route_run_docker_builds_container_command(monkeypatch) -> None:
@@ -499,6 +529,7 @@ def test_route_run_docker_builds_container_command(monkeypatch) -> None:
 
 def test_download_fetch_shows_active_route_banner(monkeypatch, tmp_path, capsys) -> None:
     monkeypatch.setenv("PITCH_ROUTE_CONTEXT", "wsl")
+    monkeypatch.setenv("PITCH_WSL_DISTRO", "Ubuntu")
 
     class _Response:
         url = "https://example.com/files/pitch.bin"
@@ -532,7 +563,7 @@ def test_download_fetch_shows_active_route_banner(monkeypatch, tmp_path, capsys)
     output_path = tmp_path / "downloads" / "pitch.bin"
     assert main(["download", "fetch", "--url", "https://example.com/files/pitch.bin", "--output", str(output_path)]) == 0
     captured = capsys.readouterr()
-    assert "Selected route: WSL (Windows host -> WSL Linux shell.)" in captured.out
+    assert "Selected route: WSL (Ubuntu; Windows host -> WSL Linux shell.)" in captured.out
 
 
 def test_start_shows_active_route_banner(monkeypatch, capsys) -> None:
@@ -547,17 +578,20 @@ def test_start_shows_active_route_banner(monkeypatch, capsys) -> None:
 def test_setup_route_wsl_dispatches_through_route_runner(monkeypatch) -> None:
     captured = {}
 
-    def _fake_run_route_command(route_name, pitch_args):
+    def _fake_run_route_command(route_name, pitch_args, wsl_distro=None):
         captured["route_name"] = route_name
         captured["pitch_args"] = pitch_args
+        captured["wsl_distro"] = wsl_distro
         return 0
 
     monkeypatch.setattr(pitch_cli, "_run_route_command", _fake_run_route_command)
+    monkeypatch.setattr(pitch_cli, "_wsl_distribution_names", lambda: ["Ubuntu"])
 
-    assert main(["setup", "--route", "wsl", "--source", r"C:\Users\peanu\Downloads\pitch"]) == 0
+    assert main(["setup", "--route", "wsl", "--wsl-distro", "Ubuntu", "--source", r"C:\Users\peanu\Downloads\pitch"]) == 0
     assert captured["route_name"] == "wsl"
     assert captured["pitch_args"][0:3] == ["setup", "--route", "native"]
     assert r"C:\Users\peanu\Downloads\pitch" in captured["pitch_args"]
+    assert captured["wsl_distro"] == "Ubuntu"
 
 
 def test_setup_reports_the_installer_drop_root(monkeypatch, tmp_path, capsys) -> None:
