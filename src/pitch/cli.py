@@ -307,6 +307,14 @@ def _route_summary(route_name: str) -> str:
     return "Unknown route."
 
 
+def _print_route_visibility() -> None:
+    print("Route options:")
+    for spec in _route_specs():
+        availability = "available" if _route_available(spec.name) else "unavailable"
+        print(f"  {spec.name}: {availability} - {spec.description}")
+    print(f"  recommended: {_default_route_name()}")
+
+
 def _wsl_command_path(path: Path) -> str:
     value = str(path)
     if _looks_like_windows_path(value):
@@ -1110,11 +1118,7 @@ def handle_probe(args: argparse.Namespace) -> int:
 
 def handle_doctor(args: argparse.Namespace) -> int:
     _print_python_workflow()
-    print("Route options:")
-    for spec in _route_specs():
-        availability = "available" if _route_available(spec.name) else "unavailable"
-        print(f"  {spec.name}: {availability} - {spec.description}")
-    print(f"  recommended: {_default_route_name()}")
+    _print_route_visibility()
     print("Detected install roots:")
     print(f"Writable asset root: {resolve_installer_drop_root()}")
 
@@ -1150,6 +1154,7 @@ def handle_doctor(args: argparse.Namespace) -> int:
 
 
 def handle_status(args: argparse.Namespace) -> int:
+    _print_route_visibility()
     state = _load_state()
     components = state.get("components")
     installed_components: set[str] = set()

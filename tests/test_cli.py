@@ -11,12 +11,18 @@ def test_verify_passes_for_source_lite_bundle() -> None:
     assert main(["verify"]) == 0
 
 
-def test_doctor_runs_without_installed_components() -> None:
+def test_doctor_runs_without_installed_components(capsys) -> None:
     assert main(["doctor"]) == 0
+    captured = capsys.readouterr()
+    assert "Route options:" in captured.out
+    assert "recommended:" in captured.out
 
 
-def test_status_handles_empty_port_configuration() -> None:
+def test_status_handles_empty_port_configuration(capsys) -> None:
     assert main(["status"]) == 0
+    captured = capsys.readouterr()
+    assert "Route options:" in captured.out
+    assert "recommended:" in captured.out
 
 
 def test_probe_handles_empty_port_configuration() -> None:
