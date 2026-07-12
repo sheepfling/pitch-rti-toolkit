@@ -907,6 +907,16 @@ def build_parser() -> argparse.ArgumentParser:
     docker_smoke_parser.add_argument("--interval-seconds", type=float, default=1.0, help="How long to sleep between reachability checks.")
     docker_smoke_parser.set_defaults(handler=handle_docker_smoke)
 
+    docker_ps_parser = docker_subparsers.add_parser("ps", help="Show the vendor Docker container status.")
+    docker_ps_parser.add_argument("--all", action="store_true", help="Include stopped containers.")
+    docker_ps_parser.set_defaults(handler=handle_docker_ps)
+
+    docker_logs_parser = docker_subparsers.add_parser("logs", help="Print logs from the vendor CRC container.")
+    docker_logs_parser.add_argument("--tail", type=int, help="Print only the last N log lines.")
+    docker_logs_parser.add_argument("--follow", action="store_true", help="Follow the container log output.")
+    docker_logs_parser.add_argument("--service", help="Override the Docker Compose service name.")
+    docker_logs_parser.set_defaults(handler=handle_docker_logs)
+
     docker_status_parser = docker_subparsers.add_parser("status", help="Show the vendor Docker setup paths.")
     docker_status_parser.set_defaults(handler=handle_docker_status)
 
@@ -1011,7 +1021,7 @@ def _fresh_state() -> dict[str, object]:
     return {
         "version": 1,
         "bundle_fingerprint": bundle_fingerprint(ROOT),
-        "platform": platform.system(),
+        "platform": _platform_system(),
         "components": {},
         "checks": {},
     }
@@ -1100,7 +1110,7 @@ def _mark_component_installed(component_key: str, label: str, source: str, detai
         "detail": detail,
     }
     state["bundle_fingerprint"] = bundle_fingerprint(ROOT)
-    state["platform"] = platform.system()
+    state["platform"] = _platform_system()
     _save_state(state)
 
 
@@ -1117,7 +1127,7 @@ def _mark_rti_smoke_result(passed: bool, detail: str) -> None:
         "detail": detail,
     }
     state["bundle_fingerprint"] = bundle_fingerprint(ROOT)
-    state["platform"] = platform.system()
+    state["platform"] = _platform_system()
     _save_state(state)
 
 
@@ -1222,7 +1232,7 @@ def _preflight_report(config_name: str | None = None) -> dict[str, object]:
 
     return {
         "tool": "pitch-preflight",
-        "platform": platform.system(),
+        "platform": _platform_system(),
         "environment": environment,
         "result": result,
         "checks": checks_payload,
@@ -1293,7 +1303,7 @@ def _linux_system_installed_components() -> set[str]:
 
 def _installed_components() -> set[str]:
     installed = set(_state_installed_components())
-    system = platform.system()
+    system = _platform_system()
     if system == "Windows":
         installed.update(_windows_system_installed_components())
     elif system == "Linux":
@@ -1302,7 +1312,7 @@ def _installed_components() -> set[str]:
 
 
 def _detected_install_roots() -> dict[str, Path]:
-    system = platform.system()
+    system = _platform_system()
     roots: dict[str, Path] = {}
 
     if system == "Windows":
@@ -1334,7 +1344,7 @@ def _detected_install_roots() -> dict[str, Path]:
 
 
 def _install_specs_for_system(include_legacy_rti: bool) -> list[InstallSpec]:
-    system = platform.system()
+    system = _platform_system()
     if system == "Windows":
         specs = list(SETUP_WINDOWS_SPECS)
         if include_legacy_rti:
@@ -1394,7 +1404,7 @@ def _probe_results_for_start(args: argparse.Namespace):
 
 
 def _platform_python_command() -> str:
-    return "py -3" if platform.system() == "Windows" else "python3"
+    return "py -3" if _is_windows_platform() else "python3"
 
 
 def _print_python_workflow() -> None:
@@ -1426,7 +1436,7 @@ def _write_json_file(path: Path, data: dict[str, object]) -> None:
 
 
 def _open_path(path: Path) -> None:
-    system = platform.system()
+    system = _platform_system()
     if system == "Windows":
         try:
             os.startfile(str(path))  # type: ignore[attr-defined]
@@ -1453,7 +1463,7 @@ def _open_path(path: Path) -> None:
 
 
 def _launch_program(path: Path, env: dict[str, str] | None = None) -> None:
-    system = platform.system()
+    system = _platform_system()
     child_env = os.environ.copy()
     if env:
         child_env.update(env)
@@ -1490,7 +1500,7 @@ def _installer_search_roots() -> list[Path]:
         if path.exists() and path not in roots:
             roots.append(path)
 
-    if _is_wsl():
+    if _is_wsl_environment():
         for env_var in ("USERPROFILE", "LOCALAPPDATA", "APPDATA"):
             raw = os.environ.get(env_var)
             if not raw:
@@ -1673,7 +1683,7 @@ def _resolve_launcher_from_root(root: Path, candidates: tuple[str, ...]) -> Path
 
 def _resolve_installer_path(spec: InstallSpec) -> Path | None:
     if spec.key == "prti1516e":
-        if platform.system() == "Linux":
+        if _is_linux_platform():
             filenames = [
                 "prti1516e-free_5_5_10_linux64.sh",
                 "prti1516e-free_5_5_10_linux32.sh",
@@ -1717,7 +1727,7 @@ def _print_missing_installers(specs: list[InstallSpec]) -> None:
 
 
 def _discover_installed_runtime_launcher(component_key: str) -> Path | None:
-    system = platform.system()
+    system = _platform_system()
     configured_roots = _configured_install_roots()
     configured_root = configured_roots.get(component_key)
     if configured_root is not None and configured_root.exists():
@@ -1808,7 +1818,7 @@ def _chat_sample_choices() -> list[str]:
 
 
 def _chat_launcher_command(launcher: Path) -> list[str]:
-    if platform.system() == "Windows" and launcher.suffix.lower() in {".bat", ".cmd"}:
+    if _is_windows_platform() and launcher.suffix.lower() in {".bat", ".cmd"}:
         return ["cmd.exe", "/c", str(launcher)]
     return [str(launcher)]
 
@@ -1893,7 +1903,7 @@ def _run_chat_smoke_test(variant: str = "auto", *, list_only: bool = False) -> i
 
 
 def _start_actions() -> list[StartAction]:
-    system = platform.system()
+    system = _platform_system()
     if system == "Windows":
         return [
             StartAction("1", "HlaStarterKit", "runtime", ASSET_ROOT / "windows" / "HlaStarterKit_v1.0.2_windows64.exe", "hlastarterkit"),
@@ -1958,7 +1968,7 @@ def _run_rti_smoke_test() -> int:
         print("No installed Pitch RTI launcher was found.", file=sys.stderr)
         return 1
 
-    if platform.system() == "Windows" and launcher.suffix.lower() in {".bat", ".cmd"}:
+    if _is_windows_platform() and launcher.suffix.lower() in {".bat", ".cmd"}:
         command = ["cmd.exe", "/c", str(launcher)]
     else:
         command = [str(launcher)]
@@ -2012,7 +2022,7 @@ def handle_setup(args: argparse.Namespace) -> int:
         return 1
 
     target_specs = _install_specs_for_system(args.include_legacy_rti)
-    if platform.system() == "Windows" and not args.include_legacy_rti:
+    if _is_windows_platform() and not args.include_legacy_rti:
         core_specs = list(SETUP_WINDOWS_SPECS)
         if not any(_resolve_installer_path(spec) is not None for spec in core_specs):
             legacy_installer = _resolve_installer_path(SETUP_WINDOWS_LEGACY_SPEC)
@@ -2045,7 +2055,7 @@ def handle_setup(args: argparse.Namespace) -> int:
     if args.force:
         print("Force mode enabled; rerunning installers.")
 
-    if platform.system() == "Linux" and args.include_legacy_rti:
+    if _is_linux_platform() and args.include_legacy_rti:
         print("Legacy RTI package is Windows-only in this bundle, so it is skipped on Linux.")
     if args.silent_install:
         print("Silent install mode enabled; using vendor quiet flags where supported.")
@@ -2290,7 +2300,7 @@ def handle_config_show(args: argparse.Namespace) -> int:
         print(f"No {config_path.name} file exists and no Pitch roots were detected.")
         return 1
 
-    system = platform.system()
+    system = _platform_system()
     payload: dict[str, object]
     if system == "Windows":
         payload = {
@@ -2320,7 +2330,7 @@ def handle_config_init(args: argparse.Namespace) -> int:
         print("No installed Pitch roots were detected, so nothing was written.")
         return 1
 
-    system = platform.system()
+    system = _platform_system()
     if system == "Windows":
         payload: dict[str, object] = {
             "windows": {key: str(value) for key, value in sorted(detected_roots.items())},
@@ -2565,6 +2575,11 @@ def _vendor_docker_compose_command(action: str) -> list[str]:
     return command
 
 
+def _run_vendor_docker_compose(action: str) -> subprocess.CompletedProcess[str]:
+    command = _vendor_docker_compose_command(action)
+    return subprocess.run(command, check=False)
+
+
 def _vendor_docker_wait_for_port(host: str, port: int, *, timeout_seconds: float = 60.0, interval_seconds: float = 1.0) -> bool:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -2610,11 +2625,10 @@ def _vendor_docker_webview_check(*, timeout_seconds: float = 10.0) -> tuple[bool
 
 def handle_docker_up(args: argparse.Namespace) -> int:
     try:
-        command = _vendor_docker_compose_command("up -d --build pitch-crc")
+        completed = _run_vendor_docker_compose("up -d --build pitch-crc")
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    completed = subprocess.run(command, check=False)
     if completed.returncode != 0:
         return int(completed.returncode)
     smoke_ok, smoke_detail = _vendor_docker_smoke_check()
@@ -2634,13 +2648,40 @@ def handle_docker_smoke(args: argparse.Namespace) -> int:
     return 0 if smoke_ok else 1
 
 
-def handle_docker_down(args: argparse.Namespace) -> int:
+def handle_docker_ps(args: argparse.Namespace) -> int:
+    action = "ps"
+    if getattr(args, "all", False):
+        action += " --all"
     try:
-        command = _vendor_docker_compose_command("down")
+        completed = _run_vendor_docker_compose(action)
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    completed = subprocess.run(command, check=False)
+    return int(completed.returncode)
+
+
+def handle_docker_logs(args: argparse.Namespace) -> int:
+    action = "logs --no-color"
+    tail = getattr(args, "tail", None)
+    if tail is not None:
+        action += f" --tail {int(tail)}"
+    if getattr(args, "follow", False):
+        action += " --follow"
+    action += f" {getattr(args, 'service', None) or 'pitch-crc'}"
+    try:
+        completed = _run_vendor_docker_compose(action)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    return int(completed.returncode)
+
+
+def handle_docker_down(args: argparse.Namespace) -> int:
+    try:
+        completed = _run_vendor_docker_compose("down")
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     return int(completed.returncode)
 
 
@@ -3052,12 +3093,11 @@ def _download_is_direct_file(url: str) -> bool:
 
 
 def _download_target_platform() -> str:
-    system = platform.system()
-    if system == "Windows":
+    if _is_windows_platform():
         return "windows64" if platform.architecture()[0] == "64bit" else "windows32"
-    if system == "Linux":
+    if _is_linux_platform():
         return "linux64" if platform.machine().endswith("64") else "linux32"
-    if system == "Darwin":
+    if _is_macos_platform():
         return "mac"
     return "windows64"
 

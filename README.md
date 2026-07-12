@@ -120,6 +120,8 @@ pitch docker init --enable-hla4-preview
 pitch docker status
 pitch docker up
 pitch docker smoke
+pitch docker ps
+pitch docker logs
 pitch docker down
 ```
 

@@ -1154,6 +1154,76 @@ def test_docker_smoke_reports_reachability(monkeypatch, capsys) -> None:
     assert captured["interval_seconds"] == 0.25
 
 
+def test_docker_ps_builds_the_vendor_compose_command(monkeypatch, tmp_path) -> None:
+    user_data_root = tmp_path / "user-data"
+    vendor_root = tmp_path / "prti1516e"
+    vendor_samples = vendor_root / "samples" / "docker"
+    vendor_samples.mkdir(parents=True)
+    (vendor_samples / "prti1516eCRC.settings").write_text("CRC.enableHla4PreviewFeatures=false\n", encoding="utf-8")
+    (vendor_samples / "prti1516eLRC.settings").write_text("LRC.example=true\n", encoding="utf-8")
+    monkeypatch.setenv("PITCH_USER_DATA_ROOT", str(user_data_root))
+    monkeypatch.setenv("PITCH_PRTI_HOME", str(vendor_root))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_ENV_FILE", str(user_data_root / "docker" / "pitch-vendor-compose.env"))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_SETTINGS_ROOT", str(user_data_root / "docker" / "vendor-settings"))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_BUILD_ROOT", str(user_data_root / "docker" / "vendor-build"))
+
+    assert main(["docker", "init"]) == 0
+
+    captured = {}
+
+    class _Result:
+        def __init__(self, returncode: int = 0) -> None:
+            self.returncode = returncode
+
+    def _fake_run(command, check=False, capture_output=False, text=False, env=None):
+        captured["command"] = command
+        return _Result(0)
+
+    monkeypatch.setattr(pitch_cli.subprocess, "run", _fake_run)
+
+    assert main(["docker", "ps", "--all"]) == 0
+    command = captured["command"]
+    assert command[0:4] == ["docker", "compose", "--env-file", str(user_data_root / "docker" / "pitch-vendor-compose.env")]
+    assert command[4] == "-f"
+    assert command[5] == str(pitch_cli.ROOT / "docker" / "pitch-vendor-compose.yml")
+    assert command[6:] == ["ps", "--all"]
+
+
+def test_docker_logs_builds_the_vendor_compose_command(monkeypatch, tmp_path) -> None:
+    user_data_root = tmp_path / "user-data"
+    vendor_root = tmp_path / "prti1516e"
+    vendor_samples = vendor_root / "samples" / "docker"
+    vendor_samples.mkdir(parents=True)
+    (vendor_samples / "prti1516eCRC.settings").write_text("CRC.enableHla4PreviewFeatures=false\n", encoding="utf-8")
+    (vendor_samples / "prti1516eLRC.settings").write_text("LRC.example=true\n", encoding="utf-8")
+    monkeypatch.setenv("PITCH_USER_DATA_ROOT", str(user_data_root))
+    monkeypatch.setenv("PITCH_PRTI_HOME", str(vendor_root))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_ENV_FILE", str(user_data_root / "docker" / "pitch-vendor-compose.env"))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_SETTINGS_ROOT", str(user_data_root / "docker" / "vendor-settings"))
+    monkeypatch.setenv("PITCH_VENDOR_DOCKER_BUILD_ROOT", str(user_data_root / "docker" / "vendor-build"))
+
+    assert main(["docker", "init"]) == 0
+
+    captured = {}
+
+    class _Result:
+        def __init__(self, returncode: int = 0) -> None:
+            self.returncode = returncode
+
+    def _fake_run(command, check=False, capture_output=False, text=False, env=None):
+        captured["command"] = command
+        return _Result(0)
+
+    monkeypatch.setattr(pitch_cli.subprocess, "run", _fake_run)
+
+    assert main(["docker", "logs", "--tail", "25", "--service", "pitch-crc"]) == 0
+    command = captured["command"]
+    assert command[0:4] == ["docker", "compose", "--env-file", str(user_data_root / "docker" / "pitch-vendor-compose.env")]
+    assert command[4] == "-f"
+    assert command[5] == str(pitch_cli.ROOT / "docker" / "pitch-vendor-compose.yml")
+    assert command[6:] == ["logs", "--no-color", "--tail", "25", "pitch-crc"]
+
+
 def test_vendor_docker_smoke_checks_webview_when_enabled(monkeypatch, tmp_path) -> None:
     env_file = tmp_path / "docker" / "pitch-vendor-compose.env"
     env_file.parent.mkdir(parents=True)
