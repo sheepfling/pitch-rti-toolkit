@@ -268,11 +268,13 @@ def test_setup_falls_back_to_legacy_rti_when_core_installers_are_missing(monkeyp
         lambda installer_path, cwd=None, quiet=False: installed.append((installer_path.name, str(cwd))),
     )
     monkeypatch.setattr(pitch_cli, "_mark_component_installed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pitch_cli, "_print_crc_settings_summary", lambda: print("CRC settings discovery:"))
     monkeypatch.setattr(pitch_cli, "_installed_components", lambda: set())
 
     assert main(["setup", "--source", str(source_root)]) == 0
     captured = capsys.readouterr()
     assert "falling back to the legacy pRTI package" in captured.out
+    assert "CRC settings discovery:" in captured.out
     assert installed == [("prti1516e-free_5_5_10_windows64.exe", str(pitch_cli.ROOT))]
     assert "Pitch setup finished." in captured.out
 

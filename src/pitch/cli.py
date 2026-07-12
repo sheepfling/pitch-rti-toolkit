@@ -1467,6 +1467,11 @@ def _print_crc_settings_summary() -> None:
         _print_settings_entries(settings_file, entries)
 
 
+def _maybe_print_prti_settings_summary(triggered: bool) -> None:
+    if triggered:
+        _print_crc_settings_summary()
+
+
 def _resolve_launcher_from_root(root: Path, candidates: tuple[str, ...]) -> Path | None:
     for relative_path in candidates:
         candidate = root / relative_path
@@ -1698,6 +1703,7 @@ def handle_setup(args: argparse.Namespace) -> int:
 
     if not args.force and detected_components >= required_keys:
         print("Pitch already appears installed. Use --force to rerun installers.")
+        _maybe_print_prti_settings_summary("prti1516e" in detected_components)
         if args.probe_ports:
             print("Probing configured ports...")
             results = _probe_results(args.ports_config)
@@ -1740,6 +1746,8 @@ def handle_setup(args: argparse.Namespace) -> int:
         print(f"Launching {spec.label} from {installer_path}...")
         run_installer(installer_path, cwd=ROOT, quiet=args.silent_install)
         _mark_component_installed(spec.key, spec.label, "installer", str(installer_path))
+        if spec.key == "prti1516e":
+            _maybe_print_prti_settings_summary(True)
 
     if args.probe_ports:
         print("Probing configured ports...")
