@@ -304,6 +304,18 @@ def _default_route_name() -> str:
     return "native"
 
 
+def _default_route_reason() -> str:
+    system = platform.system()
+    default = _default_route_name()
+    if default == "wsl":
+        return "Windows prefers WSL when it is available."
+    if default == "docker":
+        return "Windows falls back to Docker when WSL is unavailable."
+    if system == "Darwin":
+        return "macOS stays on native execution by default."
+    return "Native execution is the default on this system."
+
+
 def _route_summary(route_name: str) -> str:
     if route_name == "native":
         return "Direct host execution."
@@ -319,7 +331,7 @@ def _print_route_visibility(*, include_wsl_distros: bool = False) -> None:
     for spec in _route_specs():
         availability = "available" if _route_available(spec.name) else "unavailable"
         print(f"  {spec.name}: {availability} - {spec.description}")
-    print(f"  recommended: {_default_route_name()}")
+    print(f"  recommended: {_default_route_name()} - {_default_route_reason()}")
     if include_wsl_distros:
         distros = _wsl_distribution_names()
         if distros:

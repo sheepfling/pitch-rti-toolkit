@@ -437,7 +437,7 @@ def test_route_show_reports_available_routes(monkeypatch, capsys) -> None:
     assert "docker" in captured.out
     assert "WSL distros: Ubuntu, Debian" in captured.out
     assert "WSL default: the configured default distro unless --wsl-distro is set" in captured.out
-    assert "recommended: wsl" in captured.out
+    assert "recommended: wsl - Windows prefers WSL when it is available." in captured.out
 
 
 def test_default_route_name_prefers_native_on_darwin(monkeypatch) -> None:
@@ -458,6 +458,13 @@ def test_default_route_name_falls_back_to_docker_on_windows_when_wsl_missing(mon
     monkeypatch.setattr(pitch_cli.shutil, "which", _fake_which)
 
     assert pitch_cli._default_route_name() == "docker"
+
+
+def test_default_route_reason_matches_heuristic(monkeypatch) -> None:
+    monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"C:\Windows\System32\wsl.exe" if name == "wsl.exe" else None)
+
+    assert pitch_cli._default_route_reason() == "Windows prefers WSL when it is available."
 
 
 def test_route_run_native_delegates_to_main(monkeypatch) -> None:
