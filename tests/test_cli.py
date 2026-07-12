@@ -495,7 +495,7 @@ def test_route_run_wsl_translates_windows_paths(monkeypatch) -> None:
     class _Result:
         returncode = 0
 
-    def _fake_run(command, check=False, env=None):
+    def _fake_run(command, check=False, capture_output=False, text=False, env=None):
         captured["command"] = command
         captured["env"] = env
         return _Result()
@@ -522,7 +522,7 @@ def test_route_run_wsl_accepts_distribution_index(monkeypatch) -> None:
     class _Result:
         returncode = 0
 
-    def _fake_run(command, check=False, env=None):
+    def _fake_run(command, check=False, capture_output=False, text=False, env=None):
         captured["command"] = command
         captured["env"] = env
         return _Result()
@@ -546,7 +546,7 @@ def test_route_run_wsl_uses_default_distribution_when_not_selected(monkeypatch) 
     class _Result:
         returncode = 0
 
-    def _fake_run(command, check=False, env=None):
+    def _fake_run(command, check=False, capture_output=False, text=False, env=None):
         captured["command"] = command
         captured["env"] = env
         return _Result()
@@ -579,7 +579,7 @@ def test_route_run_docker_builds_container_command(monkeypatch) -> None:
     class _Result:
         returncode = 0
 
-    def _fake_run(command, check=False, env=None):
+    def _fake_run(command, check=False, capture_output=False, text=False, env=None):
         captured["command"] = command
         captured["env"] = env
         return _Result()
@@ -591,6 +591,59 @@ def test_route_run_docker_builds_container_command(monkeypatch) -> None:
     assert command[0] == "docker"
     assert "python:3.12" in command
     assert command[command.index("sh")] == "sh"
+    assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "docker"
+
+
+def test_route_run_docker_warns_when_the_daemon_pipe_is_inaccessible(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"C:\Program Files\Docker\docker.exe" if name == "docker" else None)
+
+    calls: list[list[str]] = []
+
+    class _Result:
+        def __init__(self, returncode: int, stdout: str = "", stderr: str = "") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def _fake_run(command, check=False, capture_output=False, text=False, env=None):
+        calls.append(command)
+        if command == ["docker", "info"]:
+            return _Result(1, stderr="permission denied while trying to connect to the docker API at npipe:////./pipe/docker_engine")
+        raise AssertionError(f"Unexpected command: {command}")
+
+    monkeypatch.setattr(pitch_cli.subprocess, "run", _fake_run)
+
+    assert main(["route", "run", "docker", "verify"]) == 1
+    captured = capsys.readouterr()
+    assert "Docker Desktop is reachable, but this session cannot access the Docker API pipe." in captured.err
+    assert "elevated PowerShell session" in captured.err
+    assert calls == [["docker", "info"]]
+
+
+def test_route_run_docker_proceeds_after_a_successful_preflight(monkeypatch) -> None:
+    monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"C:\Program Files\Docker\docker.exe" if name == "docker" else None)
+
+    captured = {}
+
+    class _Result:
+        def __init__(self, returncode: int, stdout: str = "", stderr: str = "") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def _fake_run(command, check=False, capture_output=False, text=False, env=None):
+        if command == ["docker", "info"]:
+            return _Result(0, stdout="Client:\n Context: desktop-linux")
+        captured["command"] = command
+        captured["env"] = env
+        return _Result(0)
+
+    monkeypatch.setattr(pitch_cli.subprocess, "run", _fake_run)
+
+    assert main(["route", "run", "docker", "verify"]) == 0
+    command = captured["command"]
+    assert command[0] == "docker"
+    assert "python:3.12" in command
     assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "docker"
 
 

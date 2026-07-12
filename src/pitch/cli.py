@@ -492,12 +492,43 @@ def _route_payload_command(pitch_args: list[str], route_name: str, wsl_distro: s
     ]
 
 
+def _docker_preflight_check() -> bool:
+    try:
+        completed = subprocess.run(["docker", "info"], check=False, capture_output=True, text=True)
+    except OSError as exc:
+        print("Could not reach the Docker CLI to verify the daemon.", file=sys.stderr)
+        print(str(exc), file=sys.stderr)
+        return False
+
+    if completed.returncode == 0:
+        return True
+
+    output = "\n".join(
+        part.strip()
+        for part in (getattr(completed, "stdout", "") or "", getattr(completed, "stderr", "") or "")
+        if part and part.strip()
+    )
+    normalized = output.lower()
+    if "permission denied while trying to connect to the docker api" in normalized or "docker_engine" in normalized:
+        print("Docker Desktop is reachable, but this session cannot access the Docker API pipe.", file=sys.stderr)
+        print("Try rerunning from an elevated PowerShell session or make sure Docker Desktop is running.", file=sys.stderr)
+        return False
+
+    print("Docker is installed, but the daemon is not responding cleanly.", file=sys.stderr)
+    if output:
+        print(output, file=sys.stderr)
+    return False
+
+
 def _run_route_command(route_name: str, pitch_args: list[str], wsl_distro: str | None = None) -> int:
     if route_name == "native":
         return main(pitch_args)
 
     if not _route_available(route_name):
         print(f"Route '{route_name}' is not available on this machine.", file=sys.stderr)
+        return 1
+
+    if route_name == "docker" and not _docker_preflight_check():
         return 1
 
     resolved_wsl_distro = wsl_distro
