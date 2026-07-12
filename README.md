@@ -108,6 +108,7 @@ The Docker route keeps the mutable pieces outside the checkout:
 - `PITCH_USER_DATA_ROOT` stores the container's install state and preflight artifacts.
 - `PITCH_INSTALLER_DROP_ROOT` stores the installers users drop in for setup.
 - `PITCH_DOCKER_PROFILE` selects the Compose service, with `future` as the default and `hla4` available when you want that track instead.
+- `pitch docker init` writes a reusable Compose env file under the user data root, which the route picks up automatically.
 
 The Compose assets live in `docker/compose.yml` and `docker/Dockerfile`.
 

@@ -746,8 +746,12 @@ def test_route_run_wsl_rejects_unknown_distribution(monkeypatch, capsys) -> None
     assert "WSL distro 'Fedora' is not installed." in captured.err
 
 
-def test_route_run_docker_builds_container_command(monkeypatch) -> None:
+def test_route_run_docker_builds_container_command(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"C:\Program Files\Docker\docker.exe" if name == "docker" else None)
+    env_file = tmp_path / "docker" / "pitch-compose.env"
+    monkeypatch.setattr(pitch_cli, "DOCKER_ENV_PATH", env_file)
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    env_file.write_text("PITCH_DOCKER_PROFILE=future\n", encoding="utf-8")
 
     captured = {}
 
@@ -771,18 +775,24 @@ def test_route_run_docker_builds_container_command(monkeypatch) -> None:
     assert main(["route", "run", "docker", "verify"]) == 0
     command = captured["command"]
     assert command[0] == "docker"
-    assert command[1:4] == ["compose", "-f", str(pitch_cli.ROOT / "docker" / "compose.yml")]
-    assert command[4:8] == ["run", "--rm", "--build", "pitch-future"]
+    assert command[1:5] == ["compose", "--env-file", str(env_file), "-f"]
+    assert command[5] == str(pitch_cli.ROOT / "docker" / "compose.yml")
+    assert command[6:10] == ["run", "--rm", "--build", "pitch-future"]
     assert command[-1] == "verify"
     assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "docker"
     assert captured["env"]["PITCH_DOCKER_PROFILE"] == "future"
     assert captured["env"]["PITCH_USER_DATA_ROOT"] == str(pitch_cli.USER_DATA_ROOT)
     assert captured["env"]["PITCH_INSTALLER_DROP_ROOT"] == str(pitch_cli.INSTALLER_DROP_ROOT)
     assert captured["env"]["PITCH_PREFLIGHT_ARTIFACT_ROOT"] == str(pitch_cli.PREFLIGHT_ARTIFACT_ROOT)
+    assert captured["env"]["PITCH_DOCKER_ENV_FILE"] == str(env_file)
 
 
-def test_route_run_docker_warns_when_the_daemon_pipe_is_inaccessible(monkeypatch, capsys) -> None:
+def test_route_run_docker_warns_when_the_daemon_pipe_is_inaccessible(monkeypatch, capsys, tmp_path) -> None:
     monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"C:\Program Files\Docker\docker.exe" if name == "docker" else None)
+    env_file = tmp_path / "docker" / "pitch-compose.env"
+    monkeypatch.setattr(pitch_cli, "DOCKER_ENV_PATH", env_file)
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    env_file.write_text("PITCH_DOCKER_PROFILE=future\n", encoding="utf-8")
 
     calls: list[list[str]] = []
 
@@ -809,8 +819,12 @@ def test_route_run_docker_warns_when_the_daemon_pipe_is_inaccessible(monkeypatch
     assert calls == [["docker", "compose", "version"], ["docker", "info"]]
 
 
-def test_route_run_docker_proceeds_after_a_successful_preflight(monkeypatch) -> None:
+def test_route_run_docker_proceeds_after_a_successful_preflight(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"C:\Program Files\Docker\docker.exe" if name == "docker" else None)
+    env_file = tmp_path / "docker" / "pitch-compose.env"
+    monkeypatch.setattr(pitch_cli, "DOCKER_ENV_PATH", env_file)
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    env_file.write_text("PITCH_DOCKER_PROFILE=future\n", encoding="utf-8")
 
     captured = {}
 
@@ -834,8 +848,9 @@ def test_route_run_docker_proceeds_after_a_successful_preflight(monkeypatch) -> 
     assert main(["route", "run", "docker", "verify"]) == 0
     command = captured["command"]
     assert command[0] == "docker"
-    assert command[1:4] == ["compose", "-f", str(pitch_cli.ROOT / "docker" / "compose.yml")]
-    assert command[4:8] == ["run", "--rm", "--build", "pitch-future"]
+    assert command[1:5] == ["compose", "--env-file", str(env_file), "-f"]
+    assert command[5] == str(pitch_cli.ROOT / "docker" / "compose.yml")
+    assert command[6:10] == ["run", "--rm", "--build", "pitch-future"]
     assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "docker"
 
 
@@ -886,6 +901,24 @@ def test_start_shows_active_route_banner(monkeypatch, capsys) -> None:
     assert main(["start", "root"]) == 0
     captured = capsys.readouterr()
     assert "Selected route: DOCKER (hla4; Docker Compose containerized execution.)" in captured.out
+
+
+def test_docker_init_writes_a_local_env_file(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.setenv("PITCH_USER_DATA_ROOT", str(tmp_path / "user-data"))
+    monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", str(tmp_path / "user-data" / "installers"))
+    monkeypatch.setattr(pitch_cli, "USER_DATA_ROOT", tmp_path / "user-data")
+    monkeypatch.setattr(pitch_cli, "INSTALLER_DROP_ROOT", tmp_path / "user-data" / "installers")
+    monkeypatch.setattr(pitch_cli, "PREFLIGHT_ARTIFACT_ROOT", tmp_path / "user-data" / "preflight")
+    monkeypatch.setattr(pitch_cli, "DOCKER_ENV_PATH", tmp_path / "user-data" / "docker" / "pitch-compose.env")
+
+    assert main(["docker", "init", "--profile", "hla4"]) == 0
+    captured = capsys.readouterr()
+    assert "Wrote Docker env file:" in captured.out
+    env_file = tmp_path / "user-data" / "docker" / "pitch-compose.env"
+    assert env_file.exists()
+    text = env_file.read_text(encoding="utf-8")
+    assert "PITCH_DOCKER_PROFILE=hla4" in text
+    assert "PITCH_RELEASE_CHANNEL=hla4" in text
 
 
 def test_setup_route_wsl_dispatches_through_route_runner(monkeypatch) -> None:
