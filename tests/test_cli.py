@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pitch.cli as pitch_cli
+import pitch_bootstrap
 from pitch.cli import main
 from pitch_bootstrap import ensure_installer_drop_root, resolve_installer_drop_root, resolve_user_data_root
 
@@ -85,6 +86,40 @@ def test_assets_import_stages_recognized_files(monkeypatch, tmp_path) -> None:
     assert (staged_root / "prti1516e-free_5_5_10_windows64.exe").exists()
 
 
+def test_assets_import_skips_identical_files(monkeypatch, tmp_path, capsys) -> None:
+    source_root = tmp_path / "downloads"
+    source_root.mkdir()
+    staged_root = tmp_path / "staged"
+    staged_root.mkdir()
+    staged_file = staged_root / "release_notes.txt"
+    staged_file.write_text("same bytes", encoding="utf-8")
+    (source_root / "release_notes.txt").write_text("same bytes", encoding="utf-8")
+    monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", str(staged_root))
+
+    assert main(["assets", "import", str(source_root)]) == 0
+    captured = capsys.readouterr()
+    assert "Already staged:" in captured.out
+    assert "release_notes.txt" in captured.out
+
+
+def test_run_installer_uses_plain_quiet_flag(monkeypatch, tmp_path) -> None:
+    installer = tmp_path / "installer.exe"
+    installer.write_text("stub", encoding="utf-8")
+
+    captured = {}
+
+    def _fake_run(command, cwd=None, check=False):
+        captured["command"] = command
+        captured["cwd"] = cwd
+
+    monkeypatch.setattr(pitch_bootstrap.subprocess, "run", _fake_run)
+
+    pitch_bootstrap.run_installer(installer, cwd=tmp_path, quiet=True)
+
+    assert captured["command"] == [str(installer), "-q"]
+    assert captured["cwd"] == str(tmp_path)
+
+
 def test_setup_can_stage_from_a_source_folder(monkeypatch, tmp_path, capsys) -> None:
     source_root = tmp_path / "pitch-download"
     nested_root = source_root / "bundle"
@@ -124,7 +159,31 @@ def test_setup_falls_back_to_legacy_rti_when_core_installers_are_missing(monkeyp
     assert main(["setup", "--source", str(source_root)]) == 0
     captured = capsys.readouterr()
     assert "falling back to the legacy pRTI package" in captured.out
-    assert installed == [("prti1516e-free_5_5_10_windows32.exe", str(pitch_cli.ROOT))]
+    assert installed == [("prti1516e-free_5_5_10_windows64.exe", str(pitch_cli.ROOT))]
+    assert "Pitch setup finished." in captured.out
+
+
+def test_setup_prefers_legacy_rti_64_bit_when_present(monkeypatch, tmp_path, capsys) -> None:
+    source_root = tmp_path / "pitch-download"
+    nested_root = source_root / "bundle"
+    nested_root.mkdir(parents=True)
+    (nested_root / "prti1516e-free_5_5_10_windows64.exe").write_text("legacy64", encoding="utf-8")
+    (nested_root / "prti1516e-free_5_5_10_windows32.exe").write_text("legacy32", encoding="utf-8")
+    monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", str(tmp_path / "staged"))
+
+    installed: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        pitch_cli,
+        "run_installer",
+        lambda installer_path, cwd=None, quiet=False: installed.append((installer_path.name, str(cwd))),
+    )
+    monkeypatch.setattr(pitch_cli, "_mark_component_installed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pitch_cli, "_installed_components", lambda: set())
+
+    assert main(["setup", "--source", str(source_root)]) == 0
+    captured = capsys.readouterr()
+    assert "falling back to the legacy pRTI package" in captured.out
+    assert installed == [("prti1516e-free_5_5_10_windows64.exe", str(pitch_cli.ROOT))]
     assert "Pitch setup finished." in captured.out
 
 
@@ -147,7 +206,7 @@ def test_setup_passes_silent_mode_to_the_installer(monkeypatch, tmp_path, capsys
     assert main(["setup", "--source", str(source_root), "--silent-install"]) == 0
     captured = capsys.readouterr()
     assert "Silent install mode enabled" in captured.out
-    assert calls == [("prti1516e-free_5_5_10_windows32.exe", True)]
+    assert calls == [("prti1516e-free_5_5_10_windows64.exe", True)]
     assert "Pitch setup finished." in captured.out
 
 

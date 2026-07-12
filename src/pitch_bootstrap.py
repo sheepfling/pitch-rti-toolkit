@@ -545,13 +545,11 @@ def run_installer(installer_path: Path, cwd: Path | None = None, *, quiet: bool 
     command = [str(installer_path)]
     if quiet:
         command.append("-q")
-        command.append("-Dsys.resolveUserSpecificInstallationDir=true")
 
     if installer_path.suffix.lower() != ".exe":
         if not installer_path.stat().st_mode & 0o111:
             command = ["sh", str(installer_path)]
             if quiet:
                 command.append("-q")
-                command.append("-Dsys.resolveUserSpecificInstallationDir=true")
 
     subprocess.run(command, cwd=str(cwd or installer_path.parent), check=True)

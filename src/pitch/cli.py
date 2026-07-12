@@ -37,6 +37,7 @@ from pitch_bootstrap import (
     resolve_installer_drop_root,
     resolve_user_data_root,
     run_installer,
+    sha256_file,
     save_install_state,
     verify_manifest,
     verify_paths_exist,
@@ -1036,6 +1037,15 @@ def _resolve_launcher_from_root(root: Path, candidates: tuple[str, ...]) -> Path
 
 
 def _resolve_installer_path(spec: InstallSpec) -> Path | None:
+    if spec.key == "prti1516e":
+        for filename in ("prti1516e-free_5_5_10_windows64.exe", "prti1516e-free_5_5_10_windows32.exe"):
+            hits = discover_file_locations(filename, _installer_search_roots(), max_depth=4)
+            if hits:
+                return hits[0]
+        if spec.path.exists():
+            return spec.path
+        return None
+
     if spec.path.exists():
         return spec.path
 
