@@ -311,6 +311,11 @@ def build_parser() -> argparse.ArgumentParser:
     download_script_parser.add_argument("--email", help="Override the destination email address for this output.")
     download_script_parser.set_defaults(handler=handle_download_script)
 
+    download_fetch_parser = download_subparsers.add_parser("fetch", help="Download a file from a URL into the current directory or a chosen path.")
+    download_fetch_parser.add_argument("--url", required=True, help="Direct file URL to download.")
+    download_fetch_parser.add_argument("--output", help="Write the download to this path instead of the URL filename.")
+    download_fetch_parser.set_defaults(handler=handle_download_fetch)
+
     download_submit_parser = download_subparsers.add_parser("submit", help="Submit the Pitch free-download request directly.")
     download_submit_parser.add_argument("--email", help="Override the destination email address for this submission.")
     download_submit_parser.add_argument("--first-name", "--firstname", dest="first_name", help="Override the first name for this submission.")
@@ -1461,6 +1466,30 @@ def _download_submit_request(contact: dict[str, object]) -> urllib.request.Reque
     )
 
 
+def _download_url(url: str, output_path: Path | None = None) -> Path:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": PITCH_FREE_DOWNLOAD_HEADERS["User-Agent"],
+            "Accept": "application/octet-stream,*/*;q=0.8",
+            "Referer": PITCH_FREE_DOWNLOAD_URL,
+        },
+        method="GET",
+    )
+
+    with urllib.request.urlopen(request, timeout=30) as response:
+        final_url = getattr(response, "url", url)
+        target = output_path
+        if target is None:
+            parsed = urllib.parse.urlparse(final_url)
+            filename = Path(urllib.parse.unquote(parsed.path)).name or "pitch-download.bin"
+            target = Path(filename).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("wb") as handle:
+            shutil.copyfileobj(response, handle)
+        return target
+
+
 def handle_download(args: argparse.Namespace) -> int:
     parser = getattr(args, "parser", None)
     if parser is not None:
@@ -1548,6 +1577,17 @@ def handle_download_submit(args: argparse.Namespace) -> int:
     print("Pitch free download request sent, but the response was unexpected.", file=sys.stderr)
     print(body[:2000], file=sys.stderr)
     return 1
+
+
+def handle_download_fetch(args: argparse.Namespace) -> int:
+    try:
+        downloaded_path = _download_url(args.url, Path(args.output).expanduser() if args.output else None)
+    except urllib.error.URLError as exc:
+        print(f"Could not download {args.url}: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Downloaded {args.url} to {downloaded_path}")
+    return 0
 
 
 def handle_start(args: argparse.Namespace) -> int:

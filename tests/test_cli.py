@@ -209,6 +209,50 @@ def test_download_submit_posts_request(monkeypatch) -> None:
     assert captured_request["headers"]["Referer"].endswith("/install.asp")
 
 
+def test_download_fetch_downloads_to_output_path(monkeypatch, tmp_path, capsys) -> None:
+    captured_request = {}
+
+    class _Response:
+        url = "https://example.com/files/pitch.bin"
+
+        def __init__(self):
+            self._consumed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size=-1):
+            if self._consumed:
+                return b""
+            self._consumed = True
+            return b"pitch-bytes"
+
+        def readable(self):
+            return True
+
+        def close(self):
+            return None
+
+    def _fake_urlopen(request, timeout=0):
+        captured_request["url"] = request.full_url
+        captured_request["timeout"] = timeout
+        captured_request["headers"] = dict(request.header_items())
+        return _Response()
+
+    monkeypatch.setattr(pitch_cli.urllib.request, "urlopen", _fake_urlopen)
+
+    output_path = tmp_path / "downloads" / "pitch.bin"
+    assert main(["download", "fetch", "--url", "https://example.com/files/pitch.bin", "--output", str(output_path)]) == 0
+    captured = capsys.readouterr()
+    assert captured_request["url"] == "https://example.com/files/pitch.bin"
+    assert captured_request["timeout"] == 30
+    assert output_path.read_bytes() == b"pitch-bytes"
+    assert f"Downloaded https://example.com/files/pitch.bin to {output_path}" in captured.out
+
+
 def test_setup_reports_the_installer_drop_root(monkeypatch, tmp_path, capsys) -> None:
     empty_search_root = tmp_path / "empty"
     empty_search_root.mkdir()

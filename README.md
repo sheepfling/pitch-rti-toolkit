@@ -129,6 +129,12 @@ python -m pitch download submit --email you@example.com
 That uses the same saved contact defaults and posts the request to Pitch's form endpoint.
 Add `--dry-run` if you want to inspect the payload before sending it.
 
+If Pitch gives you a direct file link and you want the CLI to fetch it, use:
+
+```bash
+python -m pitch download fetch --url https://example.com/pitch-download.bin --output C:\\Users\\you\\Downloads\\pitch-download.bin
+```
+
 For a one-step install-and-probe run:
 
 ```bash
