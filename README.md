@@ -101,6 +101,14 @@ On Windows, the CLI now recommends `native` by default and leaves `wsl` and `doc
 `pitch route show` lists WSL distros with indexes, so `--wsl-distro 1` picks the first detected distro and `--wsl-distro Ubuntu` picks by name.
 `pitch setup --route ...` uses the same route choices for the main install flow.
 
+To smoke-test the installed RTI, launch the console and ask it for help:
+
+```bash
+pitch start prti1516e
+```
+
+At the `pRTI>` prompt, type `HELP` to confirm the console is alive. Use `QUIT` to exit cleanly.
+
 ## Pitch Free-Download Form
 
 Pitch’s free-download page still expects a contact form to be filled out before the bundle is sent.
