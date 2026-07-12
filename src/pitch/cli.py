@@ -320,6 +320,12 @@ def _route_context_name() -> str | None:
     return value or None
 
 
+def _print_active_route_banner() -> None:
+    route_name = _route_context_name()
+    if route_name in {"wsl", "docker"}:
+        print(f"Selected route: {route_name}")
+
+
 def _wsl_command_path(path: Path) -> str:
     value = str(path)
     if _looks_like_windows_path(value):
@@ -1878,6 +1884,7 @@ def handle_download_submit(args: argparse.Namespace) -> int:
 
 
 def handle_download_fetch(args: argparse.Namespace) -> int:
+    _print_active_route_banner()
     try:
         url = args.url
         if _download_is_direct_file(url):
@@ -1898,6 +1905,7 @@ def handle_download_fetch(args: argparse.Namespace) -> int:
 
 
 def handle_start(args: argparse.Namespace) -> int:
+    _print_active_route_banner()
     target = str(args.target or "menu")
     if target.strip().lower() == "menu":
         _show_menu()

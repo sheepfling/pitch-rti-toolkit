@@ -497,6 +497,53 @@ def test_route_run_docker_builds_container_command(monkeypatch) -> None:
     assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "docker"
 
 
+def test_download_fetch_shows_active_route_banner(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.setenv("PITCH_ROUTE_CONTEXT", "wsl")
+
+    class _Response:
+        url = "https://example.com/files/pitch.bin"
+
+        def __init__(self):
+            self._consumed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self, size=-1):
+            if self._consumed:
+                return b""
+            self._consumed = True
+            return b"pitch-bytes"
+
+        def readable(self):
+            return True
+
+        def close(self):
+            return None
+
+    def _fake_urlopen(request, timeout=0):
+        return _Response()
+
+    monkeypatch.setattr(pitch_cli.urllib.request, "urlopen", _fake_urlopen)
+
+    output_path = tmp_path / "downloads" / "pitch.bin"
+    assert main(["download", "fetch", "--url", "https://example.com/files/pitch.bin", "--output", str(output_path)]) == 0
+    captured = capsys.readouterr()
+    assert "Selected route: wsl" in captured.out
+
+
+def test_start_shows_active_route_banner(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("PITCH_ROUTE_CONTEXT", "docker")
+    monkeypatch.setattr(pitch_cli, "_run_start_action", lambda *args, **kwargs: None)
+
+    assert main(["start", "root"]) == 0
+    captured = capsys.readouterr()
+    assert "Selected route: docker" in captured.out
+
+
 def test_setup_route_wsl_dispatches_through_route_runner(monkeypatch) -> None:
     captured = {}
 
