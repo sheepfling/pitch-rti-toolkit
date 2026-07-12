@@ -45,6 +45,32 @@ def test_status_handles_empty_port_configuration(capsys) -> None:
     assert "recommended:" in captured.out
 
 
+def test_status_reports_rti_smoke_availability_and_last_pass(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(pitch_cli, "_load_state", lambda: {
+        "components": {"prti1516e": {"status": "installed"}},
+        "checks": {
+            "rti_smoke": {
+                "status": "passed",
+                "timestamp": "2026-07-12T12:34:56+00:00",
+                "detail": r"C:\\Program Files\\prti1516e\\bin\\pRTI1516e-nogui.bat",
+            }
+        },
+    })
+    monkeypatch.setattr(pitch_cli, "_installed_components", lambda: {"prti1516e"})
+    monkeypatch.setattr(
+        pitch_cli,
+        "_discover_installed_runtime_launcher",
+        lambda component_key: Path(r"C:\Program Files\prti1516e\bin\pRTI1516e-nogui.bat") if component_key == "prti1516e" else None,
+    )
+
+    assert main(["status"]) == 0
+    captured = capsys.readouterr()
+    assert "RTI smoke test:" in captured.out
+    assert "available" in captured.out
+    assert "last passed: 2026-07-12T12:34:56+00:00" in captured.out
+    assert r"C:\Program Files\prti1516e\bin\pRTI1516e-nogui.bat" in captured.out
+
+
 def test_probe_handles_empty_port_configuration() -> None:
     assert main(["probe"]) == 0
 

@@ -241,5 +241,5 @@ pitch setup --probe-ports
 1. Run `pitch verify` to confirm the bundle is intact.
 2. Run `pitch setup` to install the core Pitch stack.
 3. Run `pitch doctor` to inspect the Python workflow and detected install roots.
-4. Run `pitch status` to see install state and port readiness.
+4. Run `pitch status` to see install state, RTI smoke availability, and port readiness.
 5. Run `pitch start <target> --probe-ports` to launch a target and check the port profile.

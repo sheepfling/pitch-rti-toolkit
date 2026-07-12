@@ -15,6 +15,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -719,6 +720,7 @@ def _fresh_state() -> dict[str, object]:
         "bundle_fingerprint": bundle_fingerprint(ROOT),
         "platform": platform.system(),
         "components": {},
+        "checks": {},
     }
 
 
@@ -756,6 +758,23 @@ def _mark_component_installed(component_key: str, label: str, source: str, detai
         "status": "installed",
         "label": label,
         "source": source,
+        "detail": detail,
+    }
+    state["bundle_fingerprint"] = bundle_fingerprint(ROOT)
+    state["platform"] = platform.system()
+    _save_state(state)
+
+
+def _mark_rti_smoke_result(passed: bool, detail: str) -> None:
+    state = _load_state()
+    checks = state.setdefault("checks", {})
+    if not isinstance(checks, dict):
+        checks = {}
+        state["checks"] = checks
+
+    checks["rti_smoke"] = {
+        "status": "passed" if passed else "failed",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "detail": detail,
     }
     state["bundle_fingerprint"] = bundle_fingerprint(ROOT)
@@ -1209,9 +1228,11 @@ def _run_rti_smoke_test() -> int:
         return 1
 
     if "Available commands:" in output and "HELP" in output:
+        _mark_rti_smoke_result(True, str(launcher))
         print("Pitch RTI smoke test passed.")
         return 0
 
+    _mark_rti_smoke_result(False, str(launcher))
     print("Pitch RTI smoke test failed.", file=sys.stderr)
     if output:
         print(output, file=sys.stderr)
@@ -1405,6 +1426,29 @@ def handle_status(args: argparse.Namespace) -> int:
         print("Install overrides:")
         for component in sorted(configured_roots):
             print(f"  {component} -> {configured_roots[component]}")
+
+    print("RTI smoke test:")
+    launcher = _discover_installed_runtime_launcher("prti1516e")
+    if launcher is not None:
+        print("  available")
+    else:
+        print("  unavailable")
+    checks = state.get("checks")
+    smoke_check = checks.get("rti_smoke") if isinstance(checks, dict) else None
+    if isinstance(smoke_check, dict) and smoke_check.get("timestamp"):
+        status = str(smoke_check.get("status", "unknown")).lower()
+        timestamp = str(smoke_check.get("timestamp"))
+        detail = str(smoke_check.get("detail", "")).strip()
+        if status == "passed":
+            print(f"  last passed: {timestamp}")
+        elif status == "failed":
+            print(f"  last failed: {timestamp}")
+        else:
+            print(f"  last run: {status} at {timestamp}")
+        if detail:
+            print(f"  launcher: {detail}")
+    else:
+        print("  last run: never")
 
     print("Port readiness:")
     config_path = Path(args.config)
