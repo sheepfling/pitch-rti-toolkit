@@ -232,6 +232,37 @@ LINUX_RUNTIME_LAUNCHERS = {
 }
 
 
+def _is_wsl() -> bool:
+    release = platform.release().lower()
+    return bool(
+        os.environ.get("WSL_DISTRO_NAME")
+        or os.environ.get("WSL_INTEROP")
+        or "microsoft" in release
+    )
+
+
+def _looks_like_windows_path(value: str) -> bool:
+    return bool(re.match(r"^[A-Za-z]:[\\/]", value))
+
+
+def _translate_windows_path(value: str) -> Path:
+    drive = value[0].lower()
+    remainder = value[2:].replace("\\", "/").lstrip("/")
+    return Path(f"/mnt/{drive}/{remainder}")
+
+
+def _coerce_cli_path(value: str) -> Path:
+    if _is_wsl() and _looks_like_windows_path(value):
+        return _translate_windows_path(value)
+    return Path(value).expanduser()
+
+
+def _coerce_env_path(value: str) -> Path:
+    if _is_wsl() and _looks_like_windows_path(value):
+        return _translate_windows_path(value)
+    return Path(value).expanduser()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pitch", description="Pitch HLA starter bundle CLI.")
     subparsers = parser.add_subparsers(dest="command")
@@ -650,6 +681,19 @@ def _installer_search_roots() -> list[Path]:
     for path in INSTALLER_SEARCH_ROOTS:
         if path.exists() and path not in roots:
             roots.append(path)
+
+    if _is_wsl():
+        for env_var in ("USERPROFILE", "LOCALAPPDATA", "APPDATA"):
+            raw = os.environ.get(env_var)
+            if not raw:
+                continue
+            path = _coerce_env_path(raw)
+            candidates = [path]
+            if env_var == "USERPROFILE":
+                candidates.append(path / "Downloads")
+            for candidate in candidates:
+                if candidate.exists() and candidate not in roots:
+                    roots.append(candidate)
 
     return roots
 
@@ -1158,7 +1202,7 @@ def _stage_importable_assets(source_root: Path, dest_root: Path, force: bool = F
 
 
 def handle_assets_import(args: argparse.Namespace) -> int:
-    source_root = Path(args.source).expanduser()
+    source_root = _coerce_cli_path(args.source)
     if not source_root.exists():
         print(f"Source folder does not exist: {source_root}", file=sys.stderr)
         return 1
@@ -1200,7 +1244,7 @@ def _stage_assets_for_setup(source_root: str | None, force: bool) -> None:
     if not source_root:
         return
 
-    source_path = Path(source_root).expanduser()
+    source_path = _coerce_cli_path(source_root)
     if not source_path.exists():
         raise FileNotFoundError(f"Source folder does not exist: {source_path}")
     if not source_path.is_dir():
@@ -1661,7 +1705,7 @@ def handle_download_fetch(args: argparse.Namespace) -> int:
         else:
             platform_hint = None if args.platform == "auto" else args.platform
             resolved_url = _download_pick_candidate(url, _download_candidate_urls(url), filename=args.filename, platform_hint=platform_hint)
-        downloaded_path = _download_url(resolved_url, Path(args.output).expanduser() if args.output else None)
+        downloaded_path = _download_url(resolved_url, _coerce_cli_path(args.output) if args.output else None)
     except urllib.error.URLError as exc:
         print(f"Could not download {args.url}: {exc}", file=sys.stderr)
         return 1

@@ -387,6 +387,28 @@ def test_download_fetch_resolves_by_platform_from_page(monkeypatch, tmp_path, ca
     assert "Downloaded https://www2.pitch.se/pRTI1516e/Releases/v5.5.10-free/SnvHLyNhR6A9ZgoQ/install.asp to" in captured.out
 
 
+def test_wsl_translates_windows_paths(monkeypatch) -> None:
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setattr(pitch_cli.platform, "release", lambda: "5.15.0-microsoft-standard-WSL2")
+
+    translated = pitch_cli._coerce_cli_path(r"C:\Users\peanu\Downloads\pitch.bin")
+    assert translated == Path("/mnt/c/Users/peanu/Downloads/pitch.bin")
+
+
+def test_wsl_search_roots_include_windows_profile_downloads(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setattr(pitch_cli.platform, "release", lambda: "5.15.0-microsoft-standard-WSL2")
+    monkeypatch.setattr(pitch_cli, "INSTALLER_SEARCH_ROOTS", ())
+    translated_profile = tmp_path / "mnt" / "c" / "Users" / "peanu"
+    (translated_profile / "Downloads").mkdir(parents=True)
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\peanu")
+    monkeypatch.setattr(pitch_cli, "_coerce_env_path", lambda raw: translated_profile)
+
+    roots = pitch_cli._installer_search_roots()
+    assert translated_profile in roots
+    assert translated_profile / "Downloads" in roots
+
+
 def test_setup_reports_the_installer_drop_root(monkeypatch, tmp_path, capsys) -> None:
     empty_search_root = tmp_path / "empty"
     empty_search_root.mkdir()

@@ -61,6 +61,7 @@ By default, Pitch uses:
 
 You can override that root with `PITCH_USER_DATA_ROOT`.
 If you only want to change the installer folder, set `PITCH_INSTALLER_DROP_ROOT` instead.
+On WSL, the CLI also translates Windows-style paths like `C:\Users\you\Downloads\pitch` into the matching `/mnt/c/...` locations when you pass them on the command line or through the relevant environment variables.
 
 To print the resolved paths:
 
