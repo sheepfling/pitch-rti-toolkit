@@ -90,9 +90,12 @@ pitch route show
 pitch route run native setup
 pitch route run wsl setup
 pitch route run docker setup
+pitch setup --route wsl
+pitch setup --route docker
 ```
 
 `native` runs directly on the host OS, `wsl` runs the command through WSL on Windows, and `docker` runs it in a Linux container.
+`pitch setup --route ...` uses the same route choices for the main install flow.
 
 ## Pitch Free-Download Form
 

@@ -485,6 +485,22 @@ def test_route_run_docker_builds_container_command(monkeypatch) -> None:
     assert command[command.index("sh")] == "sh"
 
 
+def test_setup_route_wsl_dispatches_through_route_runner(monkeypatch) -> None:
+    captured = {}
+
+    def _fake_run_route_command(route_name, pitch_args):
+        captured["route_name"] = route_name
+        captured["pitch_args"] = pitch_args
+        return 0
+
+    monkeypatch.setattr(pitch_cli, "_run_route_command", _fake_run_route_command)
+
+    assert main(["setup", "--route", "wsl", "--source", r"C:\Users\peanu\Downloads\pitch"]) == 0
+    assert captured["route_name"] == "wsl"
+    assert captured["pitch_args"][0:3] == ["setup", "--route", "native"]
+    assert r"C:\Users\peanu\Downloads\pitch" in captured["pitch_args"]
+
+
 def test_setup_reports_the_installer_drop_root(monkeypatch, tmp_path, capsys) -> None:
     empty_search_root = tmp_path / "empty"
     empty_search_root.mkdir()

@@ -348,7 +348,7 @@ def _route_payload_command(pitch_args: list[str], route_name: str) -> list[str]:
             shell_command,
         ]
 
-    volume = f"{ROOT}:/work"
+    volume = f"{ROOT.as_posix()}:/work"
     return [
         "docker",
         "run",
@@ -378,6 +378,25 @@ def _run_route_command(route_name: str, pitch_args: list[str]) -> int:
     return int(completed.returncode)
 
 
+def _build_setup_argv(args: argparse.Namespace, route_name: str = "native") -> list[str]:
+    argv = ["setup", "--route", route_name]
+    if getattr(args, "include_legacy_rti", False):
+        argv.append("--include-legacy-rti")
+    if getattr(args, "probe_ports", False):
+        argv.append("--probe-ports")
+    if getattr(args, "strict_probe", False):
+        argv.append("--strict-probe")
+    if getattr(args, "force", False):
+        argv.append("--force")
+    if getattr(args, "silent_install", False):
+        argv.append("--silent-install")
+    if getattr(args, "ports_config", None):
+        argv.extend(["--ports-config", str(args.ports_config)])
+    if getattr(args, "source", None):
+        argv.extend(["--source", str(args.source)])
+    return argv
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pitch", description="Pitch HLA starter bundle CLI.")
     subparsers = parser.add_subparsers(dest="command")
@@ -388,6 +407,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--strict-probe", action="store_true", help="Fail if any configured ports are closed.")
     setup_parser.add_argument("--force", action="store_true", help="Rerun installers even if the bundle appears installed.")
     setup_parser.add_argument("--silent-install", action="store_true", help="Try the vendor installers in quiet mode.")
+    setup_parser.add_argument("--route", choices=["native", "wsl", "docker", "auto"], default="native", help="Choose how setup is executed.")
     setup_parser.add_argument("--ports-config", default=str(ASSET_ROOT / "ports.conf"), help="Port probe configuration file.")
     setup_parser.add_argument("--source", help="Folder to scan and stage into the writable installer cache before setup.")
     setup_parser.set_defaults(handler=handle_setup)
@@ -978,6 +998,12 @@ def _run_start_action(action: StartAction, args: argparse.Namespace) -> None:
 
 
 def handle_setup(args: argparse.Namespace) -> int:
+    route_name = getattr(args, "route", "native")
+    if route_name == "auto":
+        route_name = _default_route_name()
+    if route_name != "native":
+        return _run_route_command(route_name, _build_setup_argv(args, route_name="native"))
+
     _stage_assets_for_setup(getattr(args, "source", None), force=args.force)
 
     failures = _verify_setup_paths()
