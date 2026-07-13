@@ -833,6 +833,16 @@ def native_smoke_home_root() -> Path:
     if source_java_prefs.exists() and not staged_java_prefs.exists():
         shutil.copytree(source_java_prefs, staged_java_prefs)
 
+    nested_settings_root = staged_prti_root / "user.home" / "prti1516e"
+    staged_prti_root.mkdir(parents=True, exist_ok=True)
+    for settings_name in ("prti1516eCRC.settings", "prti1516eLRC.settings"):
+        nested_settings = nested_settings_root / settings_name
+        staged_settings = staged_prti_root / settings_name
+        if nested_settings.exists() and not staged_settings.exists():
+            shutil.copy2(nested_settings, staged_settings)
+    (staged_home_root / "logs").mkdir(parents=True, exist_ok=True)
+    (staged_prti_root / "logs").mkdir(parents=True, exist_ok=True)
+
     crc_port = route_rti_port(route_surface_for_context())
     settings_roots = [staged_prti_root, staged_prti_root / "user.home" / "prti1516e"]
     for settings_root in settings_roots:
