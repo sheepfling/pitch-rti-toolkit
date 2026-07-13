@@ -252,6 +252,7 @@ class StartAction:
     kind: str
     path: Path
     alias: str
+    license_mode: str = "auto"
 
 
 @dataclass(frozen=True)
@@ -1969,18 +1970,20 @@ def _start_actions() -> list[StartAction]:
             StartAction("1", "HlaStarterKit", "runtime", ASSET_ROOT / "windows" / "HlaStarterKit_v1.0.2_windows64.exe", "hlastarterkit"),
             StartAction("2", "PitchVisualOMT", "runtime", ASSET_ROOT / "windows" / "PitchVisualOMTFree_v2.7.0_windows64.exe", "pitchvisualomt"),
             StartAction("3", "prti1516e-free", "runtime", ASSET_ROOT / "windows" / "prti1516e-free_5_5_10_windows32.exe", "prti1516e"),
-            StartAction("4", "Docs", "folder", ASSET_ROOT / "docs", "docs"),
-            StartAction("5", "Plugin", "folder", ASSET_ROOT / "plugin", "plugin"),
-            StartAction("6", "Project Root", "folder", ROOT, "root"),
+            StartAction("4", "prti1516e-manual", "runtime", ASSET_ROOT / "windows" / "prti1516e-free_5_5_10_windows32.exe", "prti1516e", "manual"),
+            StartAction("5", "Docs", "folder", ASSET_ROOT / "docs", "docs"),
+            StartAction("6", "Plugin", "folder", ASSET_ROOT / "plugin", "plugin"),
+            StartAction("7", "Project Root", "folder", ROOT, "root"),
         ]
     if system == "Linux":
         return [
             StartAction("1", "HlaStarterKit", "runtime", ASSET_ROOT / "linux" / "HlaStarterKit_v1.0.2_linux64.sh", "hlastarterkit"),
             StartAction("2", "PitchVisualOMT", "runtime", ASSET_ROOT / "linux" / "PitchVisualOMTFree_v2.7.0_linux64.sh", "pitchvisualomt"),
             StartAction("3", "prti1516e-free", "runtime", ASSET_ROOT / "linux" / "prti1516e-free_5_5_10_linux64.sh", "prti1516e"),
-            StartAction("4", "Docs", "folder", ASSET_ROOT / "docs", "docs"),
-            StartAction("5", "Plugin", "folder", ASSET_ROOT / "plugin", "plugin"),
-            StartAction("6", "Project Root", "folder", ROOT, "root"),
+            StartAction("4", "prti1516e-manual", "runtime", ASSET_ROOT / "linux" / "prti1516e-free_5_5_10_linux64.sh", "prti1516e", "manual"),
+            StartAction("5", "Docs", "folder", ASSET_ROOT / "docs", "docs"),
+            StartAction("6", "Plugin", "folder", ASSET_ROOT / "plugin", "plugin"),
+            StartAction("7", "Project Root", "folder", ROOT, "root"),
         ]
     raise RuntimeError(f"Unsupported platform: {system}")
 
@@ -3298,7 +3301,7 @@ def handle_start(args: argparse.Namespace) -> int:
 
     action = _lookup_start_action(target)
     if action is None:
-        raise RuntimeError("Usage: pitch start [menu|hlastarterkit|pitchvisualomt|prti1516e|docs|plugin|root]")
+        raise RuntimeError("Usage: pitch start [menu|hlastarterkit|pitchvisualomt|prti1516e|prti1516e-manual|docs|plugin|root]")
 
     if action.alias == "prti1516e":
         _apply_requested_hla4_preview(args, context="start", require_settings=False)

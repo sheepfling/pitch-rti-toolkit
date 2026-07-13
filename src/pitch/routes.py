@@ -51,6 +51,9 @@ from pitch_bootstrap import (
     resolve_asset_root,
     resolve_installer_drop_root,
     resolve_user_data_root,
+    save_install_state,
+    load_install_state,
+    sha256_file,
 )
 
 
@@ -61,6 +64,7 @@ INSTALLER_DROP_ROOT = resolve_installer_drop_root()
 PREFLIGHT_ARTIFACT_ROOT = ARTIFACT_ROOT / "preflight"
 DOCKER_ENV_PATH = ARTIFACT_ROOT / "docker" / "pitch-compose.env"
 VENDOR_DOCKER_COMPOSE_PATH = ROOT / "docker" / "pitch-vendor-compose.yml"
+PRTI_LICENSE_STATE_PATH = USER_DATA_ROOT / "artifacts" / ".prti-license-state.json"
 
 
 @dataclass(frozen=True)
@@ -70,6 +74,7 @@ class StartAction:
     kind: str
     path: Path
     alias: str
+    license_mode: str = "auto"
 
 
 @dataclass(frozen=True)
@@ -861,6 +866,130 @@ def native_smoke_home_root() -> Path:
     return staged_home_root
 
 
+def prti_runtime_jar_path(launcher: Path) -> Path:
+    return launcher.parent.parent / "lib" / "prtifull.jar"
+
+
+def prti_license_fingerprint(launcher: Path) -> str:
+    jar_path = prti_runtime_jar_path(launcher)
+    if jar_path.exists():
+        return sha256_file(jar_path)
+    return sha256_file(launcher)
+
+
+def prti_license_state_path() -> Path:
+    return PRTI_LICENSE_STATE_PATH
+
+
+def prti_license_state_matches(launcher: Path) -> bool:
+    state = load_install_state(prti_license_state_path())
+    if not isinstance(state, dict):
+        return False
+    if state.get("accepted") is not True:
+        return False
+    return state.get("fingerprint") == prti_license_fingerprint(launcher)
+
+
+def mark_prti_license_accepted(launcher: Path) -> None:
+    save_install_state(
+        prti_license_state_path(),
+        {
+            "accepted": True,
+            "accepted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "fingerprint": prti_license_fingerprint(launcher),
+            "launcher": str(launcher),
+            "runtime": "prti1516e",
+        },
+    )
+
+
+def _accept_prti_license_once() -> bool:
+    if not is_windows_platform():
+        return False
+    try:
+        import ctypes.wintypes as _wintypes
+
+        user32 = ctypes.windll.user32
+        hwnd = None
+
+        def _enum_windows_callback(candidate_hwnd, _lparam):
+            nonlocal hwnd
+            length = user32.GetWindowTextLengthW(candidate_hwnd)
+            title_buffer = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(candidate_hwnd, title_buffer, length + 1)
+            title = title_buffer.value.strip().lower()
+            if any(marker in title for marker in ("prti license", "pitch prti friendly error", "license")):
+                hwnd = candidate_hwnd
+                return False
+            return True
+
+        enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, _wintypes.HWND, _wintypes.LPARAM)(_enum_windows_callback)
+        user32.EnumWindows(enum_proc, 0)
+
+        if hwnd:
+            button_hwnd = None
+
+            def _enum_child_callback(candidate_hwnd, _lparam):
+                nonlocal button_hwnd
+                class_name = ctypes.create_unicode_buffer(128)
+                user32.GetClassNameW(candidate_hwnd, class_name, len(class_name))
+                text_length = user32.GetWindowTextLengthW(candidate_hwnd)
+                text_buffer = ctypes.create_unicode_buffer(text_length + 1)
+                user32.GetWindowTextW(candidate_hwnd, text_buffer, text_length + 1)
+                label = text_buffer.value.strip().lower()
+                if class_name.value.lower() == "button" and any(marker in label for marker in ("accept", "agree", "ok", "continue")):
+                    button_hwnd = candidate_hwnd
+                    return False
+                return True
+
+            enum_child_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, _wintypes.HWND, _wintypes.LPARAM)(_enum_child_callback)
+            user32.EnumChildWindows(hwnd, enum_child_proc, 0)
+            try:
+                from pywinauto.controls.hwndwrapper import HwndWrapper
+
+                wrapper = HwndWrapper(hwnd)
+                wrapper.set_focus()
+                time.sleep(0.2)
+                for sequence in ("{SPACE}", "{TAB}{SPACE}", "{ENTER}", "{TAB}{ENTER}", "%a", "%y"):
+                    try:
+                        wrapper.type_keys(sequence, set_foreground=True)
+                        time.sleep(0.2)
+                    except Exception:
+                        continue
+            except Exception:
+                user32.ShowWindow(hwnd, 5)
+                user32.SetForegroundWindow(hwnd)
+                time.sleep(0.2)
+            user32.ShowWindow(hwnd, 5)
+            user32.SetForegroundWindow(hwnd)
+            time.sleep(0.2)
+            # The vendor dialog is an AWT canvas, so it may have no
+            # child button handle. Enter activates its default Accept
+            # action without moving the user's mouse.
+            user32.keybd_event(0x0D, 0, 0, 0)
+            user32.keybd_event(0x0D, 0, 2, 0)
+            time.sleep(0.4)
+            if button_hwnd:
+                user32.SendMessageW(button_hwnd, 0x00F5, 0, 0)  # BM_CLICK
+                time.sleep(0.4)
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _accept_prti_license_loop(process: subprocess.Popen[str], launcher: Path) -> None:
+    if prti_license_state_matches(launcher):
+        return
+
+    deadline = time.monotonic() + 20.0
+    while time.monotonic() < deadline and process.poll() is None:
+        if _accept_prti_license_once():
+            mark_prti_license_accepted(launcher)
+            return
+        time.sleep(0.75)
+
+
 def chat_sample_choices() -> list[str]:
     discovered: list[str] = []
     for variant in ("java-hla4", "java-hla4-fedpro", "cpp-hla4"):
@@ -1246,90 +1375,7 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
             line_queue.put(line)
 
     threading.Thread(target=_drain_stdout, daemon=True).start()
-
-    def _click_license_accept_once() -> bool:
-        if not is_windows_platform():
-            return False
-        try:
-            import ctypes.wintypes as _wintypes
-
-            user32 = ctypes.windll.user32
-            hwnd = None
-
-            def _enum_windows_callback(candidate_hwnd, _lparam):
-                nonlocal hwnd
-                length = user32.GetWindowTextLengthW(candidate_hwnd)
-                title_buffer = ctypes.create_unicode_buffer(length + 1)
-                user32.GetWindowTextW(candidate_hwnd, title_buffer, length + 1)
-                title = title_buffer.value.strip().lower()
-                if any(marker in title for marker in ("prti license", "pitch prti friendly error", "license")):
-                    hwnd = candidate_hwnd
-                    return False
-                return True
-
-            enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, _wintypes.HWND, _wintypes.LPARAM)(_enum_windows_callback)
-            user32.EnumWindows(enum_proc, 0)
-
-            if hwnd:
-                button_hwnd = None
-
-                def _enum_child_callback(candidate_hwnd, _lparam):
-                    nonlocal button_hwnd
-                    class_name = ctypes.create_unicode_buffer(128)
-                    user32.GetClassNameW(candidate_hwnd, class_name, len(class_name))
-                    text_length = user32.GetWindowTextLengthW(candidate_hwnd)
-                    text_buffer = ctypes.create_unicode_buffer(text_length + 1)
-                    user32.GetWindowTextW(candidate_hwnd, text_buffer, text_length + 1)
-                    label = text_buffer.value.strip().lower()
-                    if class_name.value.lower() == "button" and any(marker in label for marker in ("accept", "agree", "ok", "continue")):
-                        button_hwnd = candidate_hwnd
-                        return False
-                    return True
-
-                enum_child_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, _wintypes.HWND, _wintypes.LPARAM)(_enum_child_callback)
-                user32.EnumChildWindows(hwnd, enum_child_proc, 0)
-                try:
-                    from pywinauto.controls.hwndwrapper import HwndWrapper
-
-                    wrapper = HwndWrapper(hwnd)
-                    wrapper.set_focus()
-                    time.sleep(0.2)
-                    for sequence in ("{SPACE}", "{TAB}{SPACE}", "{ENTER}", "{TAB}{ENTER}", "%a", "%y"):
-                        try:
-                            wrapper.type_keys(sequence, set_foreground=True)
-                            time.sleep(0.2)
-                        except Exception:
-                            continue
-                except Exception:
-                    user32.ShowWindow(hwnd, 5)
-                    user32.SetForegroundWindow(hwnd)
-                    time.sleep(0.2)
-                user32.ShowWindow(hwnd, 5)
-                user32.SetForegroundWindow(hwnd)
-                time.sleep(0.2)
-                # The vendor dialog is an AWT canvas, so it may have no
-                # child button handle. Enter activates its default Accept
-                # action without moving the user's mouse.
-                user32.keybd_event(0x0D, 0, 0, 0)
-                user32.keybd_event(0x0D, 0, 2, 0)
-                time.sleep(0.4)
-                if button_hwnd:
-                    user32.SendMessageW(button_hwnd, 0x00F5, 0, 0)  # BM_CLICK
-                    time.sleep(0.4)
-                    return True
-
-                return bool(button_hwnd)
-            return False
-        except Exception:
-            return False
-
-    def _click_license_accept_loop() -> None:
-        deadline = time.monotonic() + 20.0
-        while time.monotonic() < deadline and process.poll() is None:
-            _click_license_accept_once()
-            time.sleep(0.75)
-
-    threading.Thread(target=_click_license_accept_loop, daemon=True).start()
+    threading.Thread(target=_accept_prti_license_loop, args=(process, launcher), daemon=True).start()
 
     deadline = time.monotonic() + 90.0
     try:
@@ -1458,19 +1504,21 @@ def start_actions(system: str, asset_root: Path, workspace_root: Path) -> list[S
         return [
             StartAction("1", "HlaStarterKit", "runtime", asset_root / "windows" / "HlaStarterKit_v1.0.2_windows64.exe", "hlastarterkit"),
             StartAction("2", "PitchVisualOMT", "runtime", asset_root / "windows" / "PitchVisualOMTFree_v2.7.0_windows64.exe", "pitchvisualomt"),
-            StartAction("3", "prti1516e-free", "runtime", asset_root / "windows" / "prti1516e-free_5_5_10_windows32.exe", "prti1516e"),
-            StartAction("4", "Docs", "folder", asset_root / "docs", "docs"),
-            StartAction("5", "Plugin", "folder", asset_root / "plugin", "plugin"),
-            StartAction("6", "Project Root", "folder", workspace_root, "root"),
+            StartAction("3", "prti1516e-free", "runtime", asset_root / "windows" / "prti1516e-free_5_5_10_windows32.exe", "prti1516e", "auto"),
+            StartAction("4", "prti1516e-manual", "runtime", asset_root / "windows" / "prti1516e-free_5_5_10_windows32.exe", "prti1516e", "manual"),
+            StartAction("5", "Docs", "folder", asset_root / "docs", "docs"),
+            StartAction("6", "Plugin", "folder", asset_root / "plugin", "plugin"),
+            StartAction("7", "Project Root", "folder", workspace_root, "root"),
         ]
     if system == "Linux":
         return [
             StartAction("1", "HlaStarterKit", "runtime", asset_root / "linux" / "HlaStarterKit_v1.0.2_linux64.sh", "hlastarterkit"),
             StartAction("2", "PitchVisualOMT", "runtime", asset_root / "linux" / "PitchVisualOMTFree_v2.7.0_linux64.sh", "pitchvisualomt"),
-            StartAction("3", "prti1516e-free", "runtime", asset_root / "linux" / "prti1516e-free_5_5_10_linux64.sh", "prti1516e"),
-            StartAction("4", "Docs", "folder", asset_root / "docs", "docs"),
-            StartAction("5", "Plugin", "folder", asset_root / "plugin", "plugin"),
-            StartAction("6", "Project Root", "folder", workspace_root, "root"),
+            StartAction("3", "prti1516e-free", "runtime", asset_root / "linux" / "prti1516e-free_5_5_10_linux64.sh", "prti1516e", "auto"),
+            StartAction("4", "prti1516e-manual", "runtime", asset_root / "linux" / "prti1516e-free_5_5_10_linux64.sh", "prti1516e", "manual"),
+            StartAction("5", "Docs", "folder", asset_root / "docs", "docs"),
+            StartAction("6", "Plugin", "folder", asset_root / "plugin", "plugin"),
+            StartAction("7", "Project Root", "folder", workspace_root, "root"),
         ]
     raise RuntimeError(f"Unsupported platform: {system}")
 
@@ -1496,7 +1544,7 @@ def run_start_action(
     workspace_root: Path,
     discovered_launcher: Callable[[str], Path | None],
     open_path: Callable[[Path], None],
-    launch_program: Callable[..., None],
+    launch_program: Callable[..., subprocess.Popen[str] | None],
 ) -> None:
     if action.kind == "folder":
         if not action.path.exists():
@@ -1516,4 +1564,6 @@ def run_start_action(
     launch_env["PITCH_PORT_PROFILE"] = port_surface
     if getattr(args, "ports_config", None):
         launch_env["PITCH_PORTS_CONFIG"] = str((workspace_root / args.ports_config).resolve() if not Path(args.ports_config).is_absolute() else Path(args.ports_config))
-    launch_program(launcher, env=launch_env)
+    process = launch_program(launcher, env=launch_env)
+    if action.alias == "prti1516e" and action.license_mode == "auto" and process is not None:
+        threading.Thread(target=_accept_prti_license_loop, args=(process, launcher), daemon=True).start()

@@ -86,9 +86,9 @@ def open_path(path: Path) -> None:
         raise RuntimeError(f"Could not open path: {path}") from exc
 
 
-def launch_program(path: Path, env: dict[str, str] | None = None) -> None:
+def launch_program(path: Path, env: dict[str, str] | None = None) -> subprocess.Popen[str]:
     child_env = os.environ.copy()
     if env:
         child_env.update(env)
     command = launcher_command(path)
-    subprocess.Popen(command, cwd=str(path.parent), env=child_env)
+    return subprocess.Popen(command, cwd=str(path.parent), env=child_env)

@@ -15,7 +15,7 @@ import pitch.routes as pitch_routes
 import pitch.settings as pitch_settings
 import pitch_bootstrap
 from pitch.cli import main
-from pitch_bootstrap import ensure_installer_drop_root, resolve_installer_drop_root, resolve_user_data_root, sha256_file
+from pitch_bootstrap import ensure_installer_drop_root, resolve_installer_drop_root, resolve_user_data_root, save_install_state, sha256_file
 
 
 def test_verify_passes_for_source_lite_bundle() -> None:
@@ -709,7 +709,8 @@ def test_linux_start_menu_includes_the_rti(monkeypatch) -> None:
 
     actions = pitch_cli._start_actions()
 
-    assert [action.alias for action in actions] == ["hlastarterkit", "pitchvisualomt", "prti1516e", "docs", "plugin", "root"]
+    assert [action.alias for action in actions] == ["hlastarterkit", "pitchvisualomt", "prti1516e", "prti1516e", "docs", "plugin", "root"]
+    assert [action.license_mode for action in actions] == ["auto", "auto", "auto", "manual", "auto", "auto", "auto"]
 
 
 def test_linux_discovers_the_rti_launcher(monkeypatch, tmp_path) -> None:
@@ -1803,6 +1804,136 @@ def test_run_start_action_uses_the_active_route_port_profile(monkeypatch, tmp_pa
     assert captured["path"] == launcher
     assert captured["env"]["PITCH_PORT"] == str(pitch_ports.route_rti_port("route-docker"))
     assert captured["env"]["PITCH_PORT_PROFILE"] == "route-docker"
+
+
+def test_prti_license_state_matches_the_runtime_jar_fingerprint(monkeypatch, tmp_path) -> None:
+    install_root = tmp_path / "prti1516e"
+    lib_root = install_root / "lib"
+    lib_root.mkdir(parents=True)
+    launcher = install_root / "bin" / "pRTI1516e-nogui.bat"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("@echo off\n", encoding="utf-8")
+    jar_path = lib_root / "prtifull.jar"
+    jar_path.write_text("jar-bytes", encoding="utf-8")
+
+    state_path = tmp_path / ".prti-license-state.json"
+    monkeypatch.setattr(pitch_routes, "PRTI_LICENSE_STATE_PATH", state_path)
+    save_install_state(
+        state_path,
+        {
+            "accepted": True,
+            "fingerprint": pitch_routes.prti_license_fingerprint(launcher),
+        },
+    )
+
+    assert pitch_routes.prti_license_state_matches(launcher) is True
+    jar_path.write_text("jar-bytes-updated", encoding="utf-8")
+    assert pitch_routes.prti_license_state_matches(launcher) is False
+
+
+def test_accept_prti_license_loop_writes_the_versioned_state(monkeypatch, tmp_path) -> None:
+    install_root = tmp_path / "prti1516e"
+    lib_root = install_root / "lib"
+    lib_root.mkdir(parents=True)
+    launcher = install_root / "bin" / "pRTI1516e-nogui.bat"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("@echo off\n", encoding="utf-8")
+    (lib_root / "prtifull.jar").write_text("jar-bytes", encoding="utf-8")
+
+    state_path = tmp_path / ".prti-license-state.json"
+    monkeypatch.setattr(pitch_routes, "PRTI_LICENSE_STATE_PATH", state_path)
+    monkeypatch.setattr(pitch_routes, "prti_license_state_matches", lambda launcher_arg: False)
+    monkeypatch.setattr(pitch_routes, "_accept_prti_license_once", lambda: True)
+
+    class _Process:
+        def poll(self):
+            return None
+
+    pitch_routes._accept_prti_license_loop(_Process(), launcher)
+
+    state = pitch_bootstrap.load_install_state(state_path)
+    assert state is not None
+    assert state["accepted"] is True
+    assert state["fingerprint"] == pitch_routes.prti_license_fingerprint(launcher)
+
+
+def test_run_start_action_starts_license_monitor_for_prti1516e(monkeypatch, tmp_path) -> None:
+    launcher = tmp_path / "pRTI1516e-nogui.bat"
+    launcher.write_text("@echo off\n", encoding="utf-8")
+    launched = {}
+    license_monitors = []
+
+    def _fake_launch_program(path, env=None):
+        launched["path"] = path
+        launched["env"] = env
+
+        class _Process:
+            def poll(self):
+                return None
+
+        return _Process()
+
+    class _Thread:
+        def __init__(self, target=None, args=(), daemon=None):
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+
+        def start(self):
+            license_monitors.append((self.target, self.args, self.daemon))
+
+    monkeypatch.setattr(pitch_routes, "_accept_prti_license_loop", lambda process, launcher_arg: license_monitors.append((process, launcher_arg)))
+    monkeypatch.setattr(pitch_routes.threading, "Thread", _Thread)
+
+    action = pitch_routes.StartAction("3", "prti1516e-free", "runtime", launcher, "prti1516e")
+    pitch_routes.run_start_action(
+        action,
+        argparse.Namespace(port=None, ports_config=None),
+        workspace_root=tmp_path,
+        discovered_launcher=lambda component_key: launcher if component_key == "prti1516e" else None,
+        open_path=lambda path: None,
+        launch_program=_fake_launch_program,
+    )
+
+    assert launched["path"] == launcher
+    assert launched["env"]["PITCH_PORT"] == str(pitch_ports.route_rti_port("route-native"))
+    assert launched["env"]["PITCH_PORT_PROFILE"] == "route-native"
+    assert license_monitors
+
+
+def test_run_start_action_skips_license_monitor_for_manual_prti1516e(monkeypatch, tmp_path) -> None:
+    launcher = tmp_path / "pRTI1516e-nogui.bat"
+    launcher.write_text("@echo off\n", encoding="utf-8")
+    launched = {}
+    license_monitors = []
+
+    def _fake_launch_program(path, env=None):
+        launched["path"] = path
+        launched["env"] = env
+
+        class _Process:
+            def poll(self):
+                return None
+
+        return _Process()
+
+    monkeypatch.setattr(pitch_routes, "_accept_prti_license_loop", lambda process, launcher_arg: license_monitors.append((process, launcher_arg)))
+    monkeypatch.setattr(pitch_routes.threading, "Thread", lambda *args, **kwargs: pytest.fail("manual mode should not start the license monitor"))
+
+    action = pitch_routes.StartAction("4", "prti1516e-manual", "runtime", launcher, "prti1516e", "manual")
+    pitch_routes.run_start_action(
+        action,
+        argparse.Namespace(port=None, ports_config=None),
+        workspace_root=tmp_path,
+        discovered_launcher=lambda component_key: launcher if component_key == "prti1516e" else None,
+        open_path=lambda path: None,
+        launch_program=_fake_launch_program,
+    )
+
+    assert launched["path"] == launcher
+    assert launched["env"]["PITCH_PORT"] == str(pitch_ports.route_rti_port("route-native"))
+    assert launched["env"]["PITCH_PORT_PROFILE"] == "route-native"
+    assert license_monitors == []
 
 
 def test_start_can_enable_hla4_preview_before_launch(monkeypatch, tmp_path, capsys) -> None:
