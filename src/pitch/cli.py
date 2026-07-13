@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import contextlib
 import json
 import os
 import shutil
@@ -520,16 +521,31 @@ def _quote_posix_args(args: list[str]) -> str:
     return shlex.join(args)
 
 
+def _decode_wsl_output(output: bytes | str) -> str:
+    if isinstance(output, str):
+        return output
+    if not output:
+        return ""
+    for encoding in ("utf-8", "utf-16", "utf-16le", sys.getdefaultencoding(), "cp1252"):
+        try:
+            text = output.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if "\x00" not in text:
+            return text
+    return output.decode("utf-16le", errors="replace")
+
+
 def _wsl_distribution_names() -> list[str]:
     if not _has_command("wsl.exe"):
         return []
 
     try:
-        completed = subprocess.run(["wsl.exe", "-l", "-q"], check=False, capture_output=True, text=True)
+        completed = subprocess.run(["wsl.exe", "-l", "-q"], check=False, capture_output=True)
     except OSError:
         return []
 
-    output = getattr(completed, "stdout", "") or ""
+    output = _decode_wsl_output(getattr(completed, "stdout", b""))
     names: list[str] = []
     for raw_line in output.splitlines():
         name = raw_line.strip().lstrip("*").strip()
@@ -543,11 +559,11 @@ def _wsl_default_distribution_name() -> str | None:
         return None
 
     try:
-        completed = subprocess.run(["wsl.exe", "-l", "-q"], check=False, capture_output=True, text=True)
+        completed = subprocess.run(["wsl.exe", "-l", "-q"], check=False, capture_output=True)
     except OSError:
         return None
 
-    output = getattr(completed, "stdout", "") or ""
+    output = _decode_wsl_output(getattr(completed, "stdout", b""))
     for raw_line in output.splitlines():
         line = raw_line.strip()
         if line.startswith("*"):
@@ -748,7 +764,10 @@ def _docker_preflight_status() -> tuple[str, str, bool]:
 
 def _run_route_command(route_name: str, pitch_args: list[str], wsl_distro: str | None = None) -> int:
     if route_name == "native":
-        return main(pitch_args)
+        route_env = os.environ.copy()
+        route_env.update(_route_payload_env(route_name, docker_env_file=DOCKER_ENV_PATH))
+        with _temporary_environ(route_env):
+            return main(pitch_args)
 
     if not _route_available(route_name):
         print(f"Route '{route_name}' is not available on this machine.", file=sys.stderr)
@@ -768,6 +787,18 @@ def _run_route_command(route_name: str, pitch_args: list[str], wsl_distro: str |
     route_env.update(_route_payload_env(route_name, wsl_distro=resolved_wsl_distro, docker_env_file=DOCKER_ENV_PATH))
     completed = subprocess.run(command, check=False, env=route_env)
     return int(completed.returncode)
+
+
+@contextlib.contextmanager
+def _temporary_environ(env: dict[str, str]):
+    previous = os.environ.copy()
+    os.environ.clear()
+    os.environ.update(env)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(previous)
 
 
 def _route_payload_env(route_name: str, wsl_distro: str | None = None, docker_env_file: Path | None = None) -> dict[str, str]:
@@ -1840,36 +1871,67 @@ def _run_chat_smoke_test(variant: str = "auto", *, list_only: bool = False) -> i
         ("pitch-smoke-alpha", "Hello from pitch-smoke-alpha"),
         ("pitch-smoke-bravo", "Hello from pitch-smoke-bravo"),
     ]
-    print(f"Chat smoke CRC host: {host}")
-    time.sleep(3.0)
+    candidate_hosts: list[str] = []
+    for candidate in [host, *_chat_smoke_host_candidates()]:
+        if candidate not in candidate_hosts:
+            candidate_hosts.append(candidate)
 
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [
-                pool.submit(_run_chat_process, command, cwd=launcher.parent, username=username, host=host, message=message)
-                for username, message in messages
-            ]
-            results = [future.result() for future in futures]
+        last_results: list[tuple[int, str]] = []
+        last_failures: list[str] = []
+        for attempt, candidate_host in enumerate(candidate_hosts, start=1):
+            print(f"Chat smoke CRC host: {candidate_host}")
+            if attempt == 1:
+                time.sleep(3.0)
+            else:
+                time.sleep(1.0)
 
-        failures: list[str] = []
-        for index, (returncode, output) in enumerate(results, start=1):
-            if returncode != 0:
-                failures.append(f"chat federate {index} exited with {returncode}")
-                print(f"--- chat federate {index} output ---")
-                print(output.rstrip())
-            elif "Type messages you want to send" not in output:
-                failures.append(f"chat federate {index} did not reach the chat prompt")
-                print(f"--- chat federate {index} output ---")
-                print(output.rstrip())
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [
+                    pool.submit(_run_chat_process, command, cwd=launcher.parent, username=username, host=candidate_host, message=message)
+                    for username, message in messages
+                ]
+                results = [future.result() for future in futures]
 
-        if failures:
-            print("Pitch chat smoke test failed.", file=sys.stderr)
-            for failure in failures:
-                print(f"  - {failure}", file=sys.stderr)
-            return 1
+            failures: list[str] = []
+            retryable = False
+            for index, (returncode, output) in enumerate(results, start=1):
+                if returncode != 0:
+                    failures.append(f"chat federate {index} exited with {returncode}")
+                    print(f"--- chat federate {index} output ---")
+                    print(output.rstrip())
+                elif "Type messages you want to send" not in output:
+                    failures.append(f"chat federate {index} did not reach the chat prompt")
+                    print(f"--- chat federate {index} output ---")
+                    print(output.rstrip())
 
-        print("Pitch chat smoke test passed.")
-        return 0
+                if any(
+                    marker in output
+                    for marker in (
+                        "Connection refused",
+                        "Unable to connect to RTI executive",
+                        "Failed to connect to CRC",
+                        "ConnectionFailed",
+                    )
+                ):
+                    retryable = True
+
+            if not failures:
+                print("Pitch chat smoke test passed.")
+                return 0
+
+            last_results = results
+            last_failures = failures
+            if not retryable:
+                break
+
+        print("Pitch chat smoke test failed.", file=sys.stderr)
+        for index, (_, output) in enumerate(last_results, start=1):
+            print(f"--- chat federate {index} output ---")
+            print(output.rstrip())
+        for failure in last_failures:
+            print(f"  - {failure}", file=sys.stderr)
+        return 1
     finally:
         if rti_process.poll() is None:
             try:

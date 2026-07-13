@@ -6,6 +6,7 @@ import os
 import subprocess
 import shutil
 import shlex
+import json
 from pathlib import Path
 
 from pitch.common import is_macos_platform, is_windows_platform, is_wsl_environment, looks_like_windows_path, resolved_docker_command, translate_windows_path
@@ -26,12 +27,19 @@ def quoted_posix_command(args: list[str]) -> str:
     return shlex.join(args)
 
 
-def wsl_command(pitch_args: list[str], *, wsl_distro: str | None = None, workspace_root: Path) -> list[str]:
+def wsl_command(
+    pitch_args: list[str],
+    *,
+    wsl_distro: str | None = None,
+    workspace_root: Path,
+    env: dict[str, str] | None = None,
+) -> list[str]:
     workspace = translate_windows_path(str(workspace_root)).as_posix() if looks_like_windows_path(str(workspace_root)) else workspace_root.as_posix()
     command = ["wsl.exe"]
     if wsl_distro:
         command.extend(["-d", wsl_distro])
-    command.extend(["--cd", workspace, "bash", "-lc", quoted_posix_command(["python3", "-m", "pitch", *pitch_args])])
+    launcher = translate_windows_path(str(workspace_root / "scripts" / "run_pitch_wsl.py")).as_posix() if looks_like_windows_path(str(workspace_root)) else (workspace_root / "scripts" / "run_pitch_wsl.py").as_posix()
+    command.extend(["--cd", workspace, "python3", launcher, json.dumps(env or {}), json.dumps(pitch_args)])
     return command
 
 

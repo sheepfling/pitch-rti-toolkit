@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import ctypes
 import concurrent.futures
+import contextlib
 import os
+import re
 import queue
 import shutil
 import socket
@@ -148,6 +150,8 @@ WINDOWS_RUNTIME_LAUNCHERS = {
         "bin/pRTI1516e-nogui.bat",
         "bin/pRTI1516e.bat",
         "bin/Start pRTI Service.bat",
+        "bin/pRTI1516e-cmdline-gui.exe",
+        "bin/pRTI1516e.exe",
         "bin/pRTI1516e-nogui.cmd",
         "bin/pRTI1516e.cmd",
         "bin/Start pRTI Service.cmd",
@@ -385,14 +389,29 @@ def quote_posix_args(args: list[str]) -> str:
     return shlex.join(args)
 
 
+def _decode_wsl_output(output: bytes | str) -> str:
+    if isinstance(output, str):
+        return output
+    if not output:
+        return ""
+    for encoding in ("utf-8", "utf-16", "utf-16le", sys.getdefaultencoding(), "cp1252"):
+        try:
+            text = output.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if "\x00" not in text:
+            return text
+    return output.decode("utf-16le", errors="replace")
+
+
 def wsl_distribution_names() -> list[str]:
     if not has_command("wsl.exe"):
         return []
     try:
-        completed = subprocess.run(["wsl.exe", "-l", "-q"], check=False, capture_output=True, text=True)
+        completed = subprocess.run(["wsl.exe", "-l", "-q"], check=False, capture_output=True)
     except OSError:
         return []
-    output = getattr(completed, "stdout", "") or ""
+    output = _decode_wsl_output(getattr(completed, "stdout", b""))
     names: list[str] = []
     for raw_line in output.splitlines():
         name = raw_line.strip().lstrip("*").strip()
@@ -405,10 +424,10 @@ def wsl_default_distribution_name() -> str | None:
     if not has_command("wsl.exe"):
         return None
     try:
-        completed = subprocess.run(["wsl.exe", "-l", "-q"], check=False, capture_output=True, text=True)
+        completed = subprocess.run(["wsl.exe", "-l", "-q"], check=False, capture_output=True)
     except OSError:
         return None
-    output = getattr(completed, "stdout", "") or ""
+    output = _decode_wsl_output(getattr(completed, "stdout", b""))
     for raw_line in output.splitlines():
         line = raw_line.strip()
         if line.startswith("*"):
@@ -459,7 +478,12 @@ def route_payload_command(
     if route_name == "native":
         return []
     if route_name == "wsl":
-        return wsl_command(translate_route_args_for_wsl(pitch_args), wsl_distro=wsl_distro, workspace_root=ROOT)
+        return wsl_command(
+            translate_route_args_for_wsl(pitch_args),
+            wsl_distro=wsl_distro,
+            workspace_root=ROOT,
+            env=route_payload_env(route_name, wsl_distro=wsl_distro),
+        )
     if route_name == "docker":
         docker_command = resolved_docker_command()
         if docker_command is None:
@@ -511,7 +535,10 @@ def run_route_command(
     docker_service_name: str = "pitch-future",
 ) -> int:
     if route_name == "native":
-        return int(native_runner(pitch_args) if native_runner is not None else 0)
+        route_env = os.environ.copy()
+        route_env.update(route_payload_env(route_name))
+        with _temporary_environ(route_env):
+            return int(native_runner(pitch_args) if native_runner is not None else 0)
     if not route_available(route_name):
         print(f"Route '{route_name}' is not available on this machine.", file=sys.stderr)
         return 1
@@ -534,6 +561,18 @@ def run_route_command(
     route_env.update(route_payload_env(route_name, wsl_distro=resolved_wsl_distro, docker_env_file=docker_env_file))
     completed = subprocess.run(command, check=False, env=route_env)
     return int(completed.returncode)
+
+
+@contextlib.contextmanager
+def _temporary_environ(env: dict[str, str]):
+    previous = os.environ.copy()
+    os.environ.clear()
+    os.environ.update(env)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(previous)
 
 
 def normalize_install_roots(paths: list[Path]) -> list[Path]:
@@ -741,14 +780,16 @@ def discovered_prti_install_root() -> Path | None:
 
 def discovered_prti_crc_settings_path() -> Path | None:
     install_root = discovered_prti_install_root()
-    if install_root is None:
-        return None
-
     candidates = [
-        install_root / "prti1516eCRC.settings",
-        install_root / "user.home" / "prti1516e" / "prti1516eCRC.settings",
-        install_root / "samples" / "docker" / "prti1516eCRC.settings",
+        Path.home() / "prti1516e" / "prti1516eCRC.settings",
     ]
+    if install_root is not None:
+        candidates.extend(
+            [
+                install_root / "prti1516eCRC.settings",
+                install_root / "samples" / "docker" / "prti1516eCRC.settings",
+            ]
+        )
     for candidate in candidates:
         if candidate.exists():
             return candidate
@@ -853,13 +894,12 @@ def run_chat_process(
 
     try:
         popen_kwargs: dict[str, object] = {}
-        if is_windows_platform() and hasattr(subprocess, "CREATE_NEW_CONSOLE"):
+        if is_windows_platform() and command and Path(command[0]).name.lower() == "cmd.exe" and hasattr(subprocess, "CREATE_NEW_CONSOLE"):
             popen_kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
-        stdin_target = None if is_windows_platform() else subprocess.PIPE
         process = subprocess.Popen(
             command,
             cwd=str(cwd),
-            stdin=stdin_target,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -869,7 +909,7 @@ def run_chat_process(
         raise RuntimeError(f"Could not start chat sample: {exc}") from exc
 
     try:
-        if is_windows_platform():
+        if is_windows_platform() and command and Path(command[0]).name.lower() == "cmd.exe":
             _write_console_input(process.pid, stdin_payload)
             output, _ = process.communicate(timeout=90)
         else:
@@ -973,10 +1013,67 @@ def _wait_for_tcp_port(host: str, port: int, *, timeout_seconds: float = 30.0, i
     return False
 
 
+def _windows_session_is_locked() -> bool:
+    if not is_windows_platform():
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        open_input_desktop = user32.OpenInputDesktop
+        open_input_desktop.restype = wintypes.HANDLE
+        get_user_object_information = user32.GetUserObjectInformationW
+        get_user_object_information.restype = wintypes.BOOL
+        close_desktop = user32.CloseDesktop
+        close_desktop.restype = wintypes.BOOL
+
+        desktop = open_input_desktop(0, False, 0x0100)
+        if not desktop:
+            return True
+        try:
+            buffer = ctypes.create_unicode_buffer(256)
+            needed = wintypes.DWORD()
+            if not get_user_object_information(desktop, 2, buffer, ctypes.sizeof(buffer), ctypes.byref(needed)):
+                return True
+            desktop_name = buffer.value.strip().lower()
+            if not desktop_name:
+                return True
+            return desktop_name != "default"
+        finally:
+            close_desktop(desktop)
+    except Exception:
+        return False
+
+
 def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
     launcher = discovered_installed_runtime_launcher("prti1516e")
     if launcher is None:
         raise RuntimeError("No installed Pitch RTI launcher was found.")
+    if _windows_session_is_locked():
+        raise RuntimeError("Windows session appears to be locked. Unlock the screen and rerun the Pitch proof.")
+
+    port_surface = route_surface_for_context()
+    staged_home_root = native_smoke_home_root()
+    staged_settings_path = staged_home_root / "prti1516e" / "prti1516eCRC.settings"
+    port = route_rti_port(port_surface)
+    if staged_settings_path.exists():
+        staged_port = read_settings_value(staged_settings_path, "CRC.port")
+        if staged_port is not None:
+            try:
+                port = int(staged_port)
+            except ValueError:
+                pass
+    env_port = os.environ.get("PITCH_PORT", "").strip()
+    if env_port:
+        try:
+            port = int(env_port)
+        except ValueError:
+            pass
+    else:
+        port = discovered_prti_crc_port(default=port)
+
+    launch_env = os.environ.copy()
+    launch_env["PRTI1516E_HOME"] = str(staged_home_root)
+    launch_env["USERPROFILE"] = str(staged_home_root)
+    launch_env["HOME"] = str(staged_home_root)
 
     try:
         process = subprocess.Popen(
@@ -985,15 +1082,34 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            env=launch_env,
         )
     except OSError as exc:
         raise RuntimeError(f"Could not start the Pitch RTI launcher: {exc}") from exc
 
     output_lines: list[str] = []
     line_queue: queue.Queue[str] = queue.Queue()
-    host = "localhost"
-    port_surface = route_surface_for_context()
-    port = discovered_prti_crc_port(default=route_rti_port(port_surface))
+    probe_hosts = ["localhost"]
+    reported_host = "localhost"
+
+    def _update_probe_hosts(line: str) -> None:
+        nonlocal probe_hosts, reported_host
+
+        host_match = re.search(r"host:([^,;/\s]+)", line)
+        if host_match:
+            candidate = host_match.group(1).strip().lstrip("/")
+            if candidate:
+                reported_host = candidate
+                probe_hosts = [candidate, "localhost"]
+                return
+
+        adapter_match = re.search(r"adapters\s+(.+)$", line)
+        if adapter_match:
+            adapters = adapter_match.group(1).strip()
+            candidates = [part.strip().lstrip("/") for part in adapters.split(",") if part.strip()]
+            if candidates:
+                reported_host = candidates[0]
+                probe_hosts = candidates + ["localhost"]
 
     def _drain_stdout() -> None:
         if process.stdout is None:
@@ -1011,7 +1127,6 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
             import ctypes.wintypes as _wintypes
 
             user32 = ctypes.windll.user32
-            rect = _wintypes.RECT()
             hwnd = None
 
             def _enum_windows_callback(candidate_hwnd, _lparam):
@@ -1023,36 +1138,56 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
                 length = user32.GetWindowTextLengthW(candidate_hwnd)
                 title_buffer = ctypes.create_unicode_buffer(length + 1)
                 user32.GetWindowTextW(candidate_hwnd, title_buffer, length + 1)
-                title = title_buffer.value.strip()
-                if title in {"pRTI License", "Pitch pRTI Friendly Error"}:
+                title = title_buffer.value.strip().lower()
+                if any(marker in title for marker in ("prti license", "pitch prti friendly error", "license")):
                     hwnd = candidate_hwnd
                     return False
                 return True
 
             enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, _wintypes.HWND, _wintypes.LPARAM)(_enum_windows_callback)
             user32.EnumWindows(enum_proc, 0)
-            if hwnd and user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-                user32.ShowWindow(hwnd, 5)
-                user32.SetForegroundWindow(hwnd)
-                time.sleep(0.2)
-                left = int(rect.left)
-                top = int(rect.top)
-                width = int(rect.right - rect.left)
-                height = int(rect.bottom - rect.top)
-                xs = [left + 130, left + 190, left + 250]
-                ys = [top + height - 44, top + height - 14]
-            else:
-                xs = [1600, 1660, 1720]
-                ys = [860, 890]
 
-            for y in ys:
-                for x in xs:
-                    user32.SetCursorPos(x, y)
-                    time.sleep(0.12)
-                    user32.mouse_event(0x0002, 0, 0, 0, 0)
-                    user32.mouse_event(0x0004, 0, 0, 0, 0)
-                    time.sleep(0.25)
-            return True
+            if hwnd:
+                button_hwnd = None
+
+                def _enum_child_callback(candidate_hwnd, _lparam):
+                    nonlocal button_hwnd
+                    class_name = ctypes.create_unicode_buffer(128)
+                    user32.GetClassNameW(candidate_hwnd, class_name, len(class_name))
+                    text_length = user32.GetWindowTextLengthW(candidate_hwnd)
+                    text_buffer = ctypes.create_unicode_buffer(text_length + 1)
+                    user32.GetWindowTextW(candidate_hwnd, text_buffer, text_length + 1)
+                    label = text_buffer.value.strip().lower()
+                    if class_name.value.lower() == "button" and any(marker in label for marker in ("accept", "agree", "ok", "continue")):
+                        button_hwnd = candidate_hwnd
+                        return False
+                    return True
+
+                enum_child_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, _wintypes.HWND, _wintypes.LPARAM)(_enum_child_callback)
+                user32.EnumChildWindows(hwnd, enum_child_proc, 0)
+                try:
+                    from pywinauto.controls.hwndwrapper import HwndWrapper
+
+                    wrapper = HwndWrapper(hwnd)
+                    wrapper.set_focus()
+                    time.sleep(0.2)
+                    for sequence in ("{SPACE}", "{TAB}{SPACE}", "{ENTER}", "{TAB}{ENTER}", "%a", "%y"):
+                        try:
+                            wrapper.type_keys(sequence, set_foreground=True)
+                            time.sleep(0.2)
+                        except Exception:
+                            continue
+                except Exception:
+                    user32.ShowWindow(hwnd, 5)
+                    user32.SetForegroundWindow(hwnd)
+                    time.sleep(0.2)
+                if button_hwnd:
+                    user32.SendMessageW(button_hwnd, 0x00F5, 0, 0)  # BM_CLICK
+                    time.sleep(0.4)
+                    return True
+
+                return bool(button_hwnd)
+            return False
         except Exception:
             return False
 
@@ -1064,11 +1199,9 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
 
     threading.Thread(target=_click_license_accept_loop, daemon=True).start()
 
-    deadline = time.monotonic() + 45.0
+    deadline = time.monotonic() + 90.0
     try:
         while True:
-            if process.poll() is not None:
-                break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
@@ -1077,21 +1210,18 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
             except queue.Empty:
                 continue
             if line:
+                _update_probe_hosts(line)
                 if (
                     "Available commands:" in line
                     or "CRC listening on adapters" in line
                     or "CRC listening on port" in line
                 ):
-                    if "adapters" in line:
-                        adapters = line.split("adapters", 1)[1].strip().lstrip(":").strip()
-                        candidate = adapters.split(",", 1)[0].strip().lstrip("/")
-                        if candidate:
-                            host = "localhost"
-                    if not _wait_for_tcp_port(host, port):
-                        break
-                    return process, f"{host}:{port}"
-            if _wait_for_tcp_port(host, port, timeout_seconds=0.1, interval_seconds=0.05):
-                return process, f"{host}:{port}"
+                    for probe_host in probe_hosts:
+                        if _wait_for_tcp_port(probe_host, port, timeout_seconds=0.25, interval_seconds=0.1):
+                            return process, f"{reported_host}:{port}"
+            for probe_host in probe_hosts:
+                if _wait_for_tcp_port(probe_host, port, timeout_seconds=0.05, interval_seconds=0.05):
+                    return process, f"{reported_host}:{port}"
     except Exception:
         process.kill()
         raise
@@ -1127,26 +1257,58 @@ def run_chat_smoke_test(variant: str = "auto", *, list_only: bool = False) -> in
     rti_process, host = _start_prti_crc()
     messages = [("pitch-smoke-alpha", "Hello from pitch-smoke-alpha"), ("pitch-smoke-bravo", "Hello from pitch-smoke-bravo")]
     try:
-        time.sleep(3.0)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [
-                pool.submit(run_chat_process, command, cwd=launcher.parent, username=username, host=host, message=message)
-                for username, message in messages
-            ]
-            results = [future.result() for future in futures]
-        failures: list[str] = []
-        for index, (returncode, output) in enumerate(results, start=1):
-            if returncode != 0:
-                failures.append(f"chat federate {index} exited with {returncode}")
-            elif "Type messages you want to send" not in output:
-                failures.append(f"chat federate {index} did not reach the chat prompt")
-        if failures:
-            print("Pitch chat smoke test failed.", file=sys.stderr)
-            for failure in failures:
-                print(f"  - {failure}", file=sys.stderr)
-            return 1
-        print("Pitch chat smoke test passed.")
-        return 0
+        deadline = time.monotonic() + 60.0
+        attempt = 0
+        last_results: list[tuple[int, str]] = []
+        last_failures: list[str] = []
+        while True:
+            attempt += 1
+            if attempt == 1:
+                time.sleep(3.0)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [
+                    pool.submit(run_chat_process, command, cwd=launcher.parent, username=username, host=host, message=message)
+                    for username, message in messages
+                ]
+                results = [future.result() for future in futures]
+
+            failures: list[str] = []
+            retryable = False
+            for index, (returncode, output) in enumerate(results, start=1):
+                if returncode != 0:
+                    failures.append(f"chat federate {index} exited with {returncode}")
+                elif "Type messages you want to send" not in output:
+                    failures.append(f"chat federate {index} did not reach the chat prompt")
+
+                if any(
+                    marker in output
+                    for marker in (
+                        "Connection refused",
+                        "Unable to connect to RTI executive",
+                        "Failed to connect to CRC",
+                        "ConnectionFailed",
+                    )
+                ):
+                    retryable = True
+
+            if not failures:
+                print("Pitch chat smoke test passed.")
+                return 0
+
+            last_results = results
+            last_failures = failures
+            if not retryable or time.monotonic() >= deadline:
+                break
+
+            time.sleep(3.0)
+
+        print("Pitch chat smoke test failed.", file=sys.stderr)
+        for index, (_, output) in enumerate(last_results, start=1):
+            print(f"--- chat federate {index} output ---")
+            print(output.rstrip())
+        for failure in last_failures:
+            print(f"  - {failure}", file=sys.stderr)
+        return 1
     finally:
         if rti_process.poll() is None:
             try:

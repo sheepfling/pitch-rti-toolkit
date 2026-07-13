@@ -4,5 +4,6 @@ __pycache__/
 src/pitch.egg-info/
 *.pyc
 artifacts/
+.tmp/
 .pitch-install-state.json
 .pitch-install-roots.json

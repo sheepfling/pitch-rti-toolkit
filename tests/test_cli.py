@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
+
+import pytest
 
 import pitch.cli as pitch_cli
 import pitch.execution as pitch_execution
@@ -324,6 +327,19 @@ def test_rti_smoke_uses_the_startup_helper_and_cleans_up(monkeypatch, capsys) ->
     assert process.killed is True
 
 
+def test_rti_smoke_fails_fast_when_the_windows_session_is_locked(monkeypatch) -> None:
+    monkeypatch.setattr(pitch_routes, "_windows_session_is_locked", lambda: True)
+    monkeypatch.setattr(pitch_routes, "discovered_installed_runtime_launcher", lambda component_key: Path(r"C:\Program Files\prti1516e\bin\pRTI1516e-cmdline-gui.exe"))
+
+    def _unexpected_popen(*args, **kwargs):
+        raise AssertionError("Popen should not be called when the session is locked")
+
+    monkeypatch.setattr(pitch_routes.subprocess, "Popen", _unexpected_popen)
+
+    with pytest.raises(RuntimeError, match="Windows session appears to be locked"):
+        pitch_routes._start_prti_crc()
+
+
 def test_rti_smoke_chat_lists_discovered_variants(monkeypatch, capsys, tmp_path) -> None:
     launcher = tmp_path / "chat-java-hla4" / "chat-java-hla4.bat"
     launcher.parent.mkdir(parents=True)
@@ -484,6 +500,30 @@ def test_chat_smoke_host_candidates_strip_a_leading_slash(monkeypatch) -> None:
     candidates = pitch_cli._chat_smoke_host_candidates()
 
     assert candidates[0] == "127.0.0.1:18089"
+
+
+def test_wsl_distribution_names_decode_utf16le_listing(monkeypatch) -> None:
+    monkeypatch.setattr(pitch_routes, "has_command", lambda command: command == "wsl.exe")
+
+    class _Completed:
+        stdout = "Ubuntu\r\ndocker-desktop\r\n".encode("utf-16le")
+
+    monkeypatch.setattr(pitch_routes.subprocess, "run", lambda *args, **kwargs: _Completed())
+
+    assert pitch_routes.wsl_distribution_names() == ["Ubuntu", "docker-desktop"]
+    assert pitch_routes.wsl_default_distribution_name() is None
+
+
+def test_cli_wsl_distribution_names_decode_utf16le_listing(monkeypatch) -> None:
+    monkeypatch.setattr(pitch_cli, "_has_command", lambda command: command == "wsl.exe")
+
+    class _Completed:
+        stdout = "Ubuntu\r\ndocker-desktop\r\n".encode("utf-16le")
+
+    monkeypatch.setattr(pitch_cli.subprocess, "run", lambda *args, **kwargs: _Completed())
+
+    assert pitch_cli._wsl_distribution_names() == ["Ubuntu", "docker-desktop"]
+    assert pitch_cli._wsl_default_distribution_name() is None
 
 
 def test_rti_smoke_chat_uses_cmd_on_wsl_for_bat_launchers(monkeypatch, capsys, tmp_path) -> None:
@@ -989,6 +1029,27 @@ def test_route_run_native_delegates_to_main(monkeypatch) -> None:
     assert captured["argv"] == ["verify"]
 
 
+def test_route_run_native_sets_the_native_route_context(monkeypatch) -> None:
+    captured = {}
+
+    def _fake_main(argv):
+        captured["argv"] = argv
+        captured["env"] = {
+            "PITCH_ROUTE_CONTEXT": pitch_cli.os.environ.get("PITCH_ROUTE_CONTEXT"),
+            "PITCH_PORT": pitch_cli.os.environ.get("PITCH_PORT"),
+            "PITCH_PORT_PROFILE": pitch_cli.os.environ.get("PITCH_PORT_PROFILE"),
+        }
+        return 0
+
+    monkeypatch.setattr(pitch_cli, "main", _fake_main)
+
+    assert pitch_cli._run_route_command("native", ["status"]) == 0
+    assert captured["argv"] == ["status"]
+    assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "native"
+    assert captured["env"]["PITCH_PORT_PROFILE"] == "route-native"
+    assert captured["env"]["PITCH_PORT"] == str(pitch_ports.route_rti_port("route-native"))
+
+
 def test_route_run_wsl_translates_windows_paths(monkeypatch) -> None:
     monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Windows")
     monkeypatch.setattr(pitch_cli.shutil, "which", lambda name: r"C:\Windows\System32\wsl.exe" if name == "wsl.exe" else None)
@@ -1013,8 +1074,20 @@ def test_route_run_wsl_translates_windows_paths(monkeypatch) -> None:
     command = captured["command"]
     assert command[0] == "wsl.exe"
     assert command[1:4] == ["-d", "Ubuntu", "--cd"]
-    assert command[4:6] == ["/mnt/c/Users/peanu/GIT/sheepfling/pitch-rti-toolkit", "bash"]
-    assert command[-1] == "python3 -m pitch setup --source /mnt/c/Users/peanu/Downloads/pitch"
+    assert command[4:7] == [
+        "/mnt/c/Users/peanu/GIT/sheepfling/pitch-rti-toolkit",
+        "python3",
+        "/mnt/c/Users/peanu/GIT/sheepfling/pitch-rti-toolkit/scripts/run_pitch_wsl.py",
+    ]
+    assert command[7] == json.dumps(
+        {
+            "PITCH_ROUTE_CONTEXT": "wsl",
+            "PITCH_WSL_DISTRO": "Ubuntu",
+            "PITCH_PORT": str(pitch_ports.route_rti_port("route-wsl")),
+            "PITCH_PORT_PROFILE": "route-wsl",
+        }
+    )
+    assert command[8] == '["setup", "--source", "/mnt/c/Users/peanu/Downloads/pitch"]'
     assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "wsl"
     assert captured["env"]["PITCH_WSL_DISTRO"] == "Ubuntu"
 
@@ -1043,6 +1116,11 @@ def test_route_run_wsl_accepts_distribution_index(monkeypatch) -> None:
     command = captured["command"]
     assert command[0] == "wsl.exe"
     assert command[1:4] == ["-d", "Debian", "--cd"]
+    assert command[4:7] == [
+        "/mnt/c/Users/peanu/GIT/sheepfling/pitch-rti-toolkit",
+        "python3",
+        "/mnt/c/Users/peanu/GIT/sheepfling/pitch-rti-toolkit/scripts/run_pitch_wsl.py",
+    ]
     assert captured["env"]["PITCH_WSL_DISTRO"] == "Debian"
 
 
@@ -1070,7 +1148,23 @@ def test_route_run_wsl_uses_default_distribution_when_not_selected(monkeypatch) 
     assert main(["route", "run", "wsl", "verify"]) == 0
     command = captured["command"]
     assert command[0] == "wsl.exe"
-    assert command[1:6] == ["-d", "Ubuntu", "--cd", "/mnt/c/Users/peanu/GIT/sheepfling/pitch-rti-toolkit", "bash"]
+    assert command[1:7] == [
+        "-d",
+        "Ubuntu",
+        "--cd",
+        "/mnt/c/Users/peanu/GIT/sheepfling/pitch-rti-toolkit",
+        "python3",
+        "/mnt/c/Users/peanu/GIT/sheepfling/pitch-rti-toolkit/scripts/run_pitch_wsl.py",
+    ]
+    assert command[7] == json.dumps(
+        {
+            "PITCH_ROUTE_CONTEXT": "wsl",
+            "PITCH_WSL_DISTRO": "Ubuntu",
+            "PITCH_PORT": str(pitch_ports.route_rti_port("route-wsl")),
+            "PITCH_PORT_PROFILE": "route-wsl",
+        }
+    )
+    assert command[8] == '["verify"]'
     assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "wsl"
     assert captured["env"]["PITCH_WSL_DISTRO"] == "Ubuntu"
 
