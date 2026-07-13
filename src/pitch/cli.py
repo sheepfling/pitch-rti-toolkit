@@ -102,6 +102,7 @@ from pitch.routes import (
     log_detected_installed as _log_detected_installed,
     lookup_start_action as _lookup_start_action_impl,
     normalize_install_roots as _normalize_install_roots,
+    native_smoke_home_root as _native_smoke_home_root,
     print_active_route_banner as _print_active_route_banner,
     print_route_visibility as _print_route_visibility,
     resolve_installer_path as _resolve_installer_path,
@@ -1777,7 +1778,25 @@ def _chat_launcher_command(launcher: Path) -> list[str]:
         jar_path = launcher.parent / f"{launcher.stem}.jar"
         java_exe = sample_root / "jre" / "bin" / "java.exe"
         if jar_path.exists() and java_exe.exists():
-            return [str(java_exe), "-Djava.library.path=" + str(sample_root / "lib"), "-jar", str(jar_path)]
+            return [
+                str(java_exe),
+                f"-Duser.home={_native_smoke_home_root()}",
+                "-Djava.library.path=" + str(sample_root / "lib"),
+                "-jar",
+                str(jar_path),
+            ]
+    if _is_linux_platform():
+        sample_root = launcher.parent.parent.parent
+        jar_path = launcher.parent / f"{launcher.stem}.jar"
+        java_exe = sample_root / "jre" / "bin" / "java"
+        if jar_path.exists() and java_exe.exists():
+            return [
+                str(java_exe),
+                f"-Duser.home={_native_smoke_home_root()}",
+                "-Djava.library.path=" + str(sample_root / "lib"),
+                "-jar",
+                str(jar_path),
+            ]
     return _launcher_command(launcher)
 
 

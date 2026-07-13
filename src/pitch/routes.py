@@ -812,7 +812,8 @@ def discovered_prti_crc_port(*, default: int = 8989) -> int:
 
 
 def native_smoke_home_root() -> Path:
-    staged_home_root = ARTIFACT_ROOT / "native-home"
+    home_name = "wsl-home" if is_wsl_environment() else "native-home"
+    staged_home_root = ARTIFACT_ROOT / home_name
     staged_prti_root = staged_home_root / "prti1516e"
     source_home_root = Path.home() / "prti1516e"
 
@@ -828,17 +829,19 @@ def native_smoke_home_root() -> Path:
                 shutil.copy2(item, destination)
 
     crc_port = route_rti_port(route_surface_for_context())
-    crc_settings = staged_prti_root / "prti1516eCRC.settings"
-    if crc_settings.exists():
-        content = crc_settings.read_text(encoding="utf-8", errors="replace")
-        content = content.replace("CRC.port=8989", f"CRC.port={crc_port}")
-        crc_settings.write_text(content, encoding="utf-8")
+    settings_roots = [staged_prti_root, staged_prti_root / "user.home" / "prti1516e"]
+    for settings_root in settings_roots:
+        crc_settings = settings_root / "prti1516eCRC.settings"
+        if crc_settings.exists():
+            content = crc_settings.read_text(encoding="utf-8", errors="replace")
+            content = re.sub(r"(?m)^CRC\.port=.*$", f"CRC.port={crc_port}", content)
+            crc_settings.write_text(content, encoding="utf-8")
 
-    lrc_settings = staged_prti_root / "prti1516eLRC.settings"
-    if lrc_settings.exists():
-        content = lrc_settings.read_text(encoding="utf-8", errors="replace")
-        content = content.replace("crcAddress=localhost\\:8989", f"crcAddress=localhost\\:{crc_port}")
-        lrc_settings.write_text(content, encoding="utf-8")
+        lrc_settings = settings_root / "prti1516eLRC.settings"
+        if lrc_settings.exists():
+            content = lrc_settings.read_text(encoding="utf-8", errors="replace")
+            content = re.sub(r"(?m)^crcAddress=.*$", f"crcAddress=localhost\\:{crc_port}", content)
+            lrc_settings.write_text(content, encoding="utf-8")
 
     return staged_home_root
 
@@ -877,7 +880,13 @@ def chat_launcher_command(launcher: Path) -> list[str]:
         jar_path = launcher.parent / f"{launcher.stem}.jar"
         java_exe = sample_root / "jre" / "bin" / "java.exe"
         if jar_path.exists() and java_exe.exists():
-            return [str(java_exe), "-Djava.library.path=" + str(sample_root / "lib"), "-jar", str(jar_path)]
+            return [
+                str(java_exe),
+                f"-Duser.home={native_smoke_home_root()}",
+                "-Djava.library.path=" + str(sample_root / "lib"),
+                "-jar",
+                str(jar_path),
+            ]
     if is_linux_platform():
         sample_root = launcher.parent.parent.parent
         jar_path = launcher.parent / f"{launcher.stem}.jar"
@@ -896,7 +905,27 @@ def chat_launcher_command(launcher: Path) -> list[str]:
 def prti_crc_command(launcher: Path, staged_home_root: Path) -> list[str]:
     """Build a repeatable CRC command without changing the vendor install."""
     if is_linux_platform():
-        return [str(launcher), f"-J-Duser.home={staged_home_root}"]
+        install_root = launcher.parent.parent
+        java_exe = install_root / "jre" / "bin" / "java"
+        lib_root = install_root / "lib"
+        classpath = [
+            lib_root / "prtifull.jar",
+            lib_root / "booster1516.jar",
+            lib_root / "webgui2-protocol.jar",
+        ]
+        if java_exe.exists() and all(path.exists() for path in classpath):
+            return [
+                str(java_exe),
+                "-Xmx512m",
+                f"-Duser.home={staged_home_root}",
+                f"-Djava.library.path={lib_root}",
+                "-classpath",
+                ":".join(str(path) for path in classpath),
+                "se.pitch.prti1516e.RTIexec",
+                "-nocmdline",
+                "-nogui",
+                "-verbose",
+            ]
     return _launcher_command(launcher)
 
 
@@ -1124,15 +1153,17 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
     else:
         port = discovered_prti_crc_port(default=port)
 
-    if staged_settings_path.exists():
-        content = staged_settings_path.read_text(encoding="utf-8", errors="replace")
-        content = re.sub(r"(?m)^CRC\.port=.*$", f"CRC.port={port}", content)
-        staged_settings_path.write_text(content, encoding="utf-8")
-    staged_lrc_settings_path = staged_home_root / "prti1516e" / "prti1516eLRC.settings"
-    if staged_lrc_settings_path.exists():
-        content = staged_lrc_settings_path.read_text(encoding="utf-8", errors="replace")
-        content = re.sub(r"(?m)^crcAddress=.*$", f"crcAddress=localhost\\:{port}", content)
-        staged_lrc_settings_path.write_text(content, encoding="utf-8")
+    for settings_root in (staged_settings_path.parent, staged_settings_path.parent / "user.home" / "prti1516e"):
+        crc_settings = settings_root / "prti1516eCRC.settings"
+        if crc_settings.exists():
+            content = crc_settings.read_text(encoding="utf-8", errors="replace")
+            content = re.sub(r"(?m)^CRC\.port=.*$", f"CRC.port={port}", content)
+            crc_settings.write_text(content, encoding="utf-8")
+        lrc_settings = settings_root / "prti1516eLRC.settings"
+        if lrc_settings.exists():
+            content = lrc_settings.read_text(encoding="utf-8", errors="replace")
+            content = re.sub(r"(?m)^crcAddress=.*$", f"crcAddress=localhost\\:{port}", content)
+            lrc_settings.write_text(content, encoding="utf-8")
 
     launch_env = os.environ.copy()
     launch_env["PRTI1516E_HOME"] = str(staged_home_root)
@@ -1143,6 +1174,7 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
         process = subprocess.Popen(
             prti_crc_command(launcher, staged_home_root),
             cwd=str(launcher.parent),
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -1211,10 +1243,6 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
 
             def _enum_windows_callback(candidate_hwnd, _lparam):
                 nonlocal hwnd
-                pid = _wintypes.DWORD()
-                user32.GetWindowThreadProcessId(candidate_hwnd, ctypes.byref(pid))
-                if pid.value != process.pid:
-                    return True
                 length = user32.GetWindowTextLengthW(candidate_hwnd)
                 title_buffer = ctypes.create_unicode_buffer(length + 1)
                 user32.GetWindowTextW(candidate_hwnd, title_buffer, length + 1)
@@ -1261,6 +1289,15 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
                     user32.ShowWindow(hwnd, 5)
                     user32.SetForegroundWindow(hwnd)
                     time.sleep(0.2)
+                user32.ShowWindow(hwnd, 5)
+                user32.SetForegroundWindow(hwnd)
+                time.sleep(0.2)
+                # The vendor dialog is an AWT canvas, so it may have no
+                # child button handle. Enter activates its default Accept
+                # action without moving the user's mouse.
+                user32.keybd_event(0x0D, 0, 0, 0)
+                user32.keybd_event(0x0D, 0, 2, 0)
+                time.sleep(0.4)
                 if button_hwnd:
                     user32.SendMessageW(button_hwnd, 0x00F5, 0, 0)  # BM_CLICK
                     time.sleep(0.4)

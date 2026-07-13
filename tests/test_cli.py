@@ -726,13 +726,22 @@ def test_linux_discovers_the_rti_launcher(monkeypatch, tmp_path) -> None:
 def test_linux_crc_command_uses_staged_java_home(monkeypatch, tmp_path) -> None:
     install_root = tmp_path / "prti1516e"
     launcher = install_root / "bin" / "pRTI1516e-nogui.sh"
+    java_exe = install_root / "jre" / "bin" / "java"
+    jar_paths = [install_root / "lib" / name for name in ("prtifull.jar", "booster1516.jar", "webgui2-protocol.jar")]
     launcher.parent.mkdir(parents=True)
+    java_exe.parent.mkdir(parents=True)
+    for path in jar_paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+    java_exe.write_text("", encoding="utf-8")
     launcher.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setattr(pitch_routes, "is_linux_platform", lambda: True)
 
     command = pitch_routes.prti_crc_command(launcher, tmp_path / "native-home")
 
-    assert command == [str(launcher), f"-J-Duser.home={tmp_path / 'native-home'}"]
+    assert command[:2] == [str(java_exe), "-Xmx512m"]
+    assert f"-Duser.home={tmp_path / 'native-home'}" in command
+    assert command[-4:] == ["se.pitch.prti1516e.RTIexec", "-nocmdline", "-nogui", "-verbose"]
 
 
 def test_download_submit_dry_run_uses_download_contact(monkeypatch, capsys) -> None:
