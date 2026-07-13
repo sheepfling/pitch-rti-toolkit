@@ -2,8 +2,28 @@
 
 This repo is a Python-first starter bundle for Pitch RTI / HLA setup on Linux and Windows.
 It is organized as a conventional Python project with `src/` for implementation and `tests/` for smoke checks.
-The downloaded vendor bundle lives under `pitch/`, including the SHA manifest used for verification.
+The checked-in `pitch/` tree contains documentation, manifests, and helper files; vendor installers remain user-supplied and are staged outside the checkout or wheel.
 It is intended to be cloned directly or added as a git submodule from a larger project.
+
+## v0.1.0 Status
+
+This release is an integration toolkit, not a redistribution of Pitch RTI. It does not include the proprietary runtime, installers, license service, or a claim of HLA conformance by itself. Users must supply an authorized Pitch bundle or installer files.
+
+### Verified Here
+
+- Windows native startup against an already-installed Pitch RTI 5.5.10 Free runtime.
+- Installed RTI proof and two-federate chat smoke, including cleanup so a failed or interrupted run does not intentionally leave the test port or Pitch process tree running.
+- Python CLI tests: `91 passed` with `python -m pytest -q`.
+- Route discovery, settings discovery, installer staging, checksum handling, WSL command construction, and Docker command construction are covered by automated tests.
+
+### Available, With Boundaries
+
+- `native`, `wsl`, and `docker` routes are exposed through one CLI. Native is the default on Windows; WSL distro selection and Docker profiles are explicit options.
+- The vendor Docker workflow can stage the installed `samples/docker` context, expose the `future` and `hla4` profiles, update `CRC.enableHla4PreviewFeatures`, and probe the optional Web View when its payload is supplied.
+- HLA 4 Preview is exposed as a discovered/configurable Pitch setting. Enabling the setting is not the same as independently certifying HLA 4 behavior.
+- WSL and vendor Docker paths are implemented and unit-tested, but this release does not call them live-proven on this machine. The installed Linux runtime tested here printed its startup banner without opening the expected CRC listener, so the WSL route remains a follow-up investigation rather than a release claim.
+
+See [CHANGELOG.md](CHANGELOG.md) for the release record and known limitations.
 
 ## Quick Flow
 
@@ -315,10 +335,10 @@ That command checks the local checksum manifest written into the installer drop 
 - `pyproject.toml` - packaging metadata and `pitch` console script entrypoint
 - `tests/` - smoke tests for the Python workflow
 - `pitch/docs/` - user guides and tutorials
-- `pitch/plugin/` - Pitch Unreal Engine connector package
-- `pitch/linux/`, `pitch/windows/`, and `pitch/mac/` - vendor payloads and unpacked runtime trees
+- `pitch/docs/` - checked-in Pitch and HLA reference documents
+- external installer drop root - user-supplied installers and downloaded support artifacts
 - `pitch/ports.conf` - default port probe list
-- `pitch/checksums.sha256` - bundle fingerprint marker for the source tree
+- `pitch/checksums.sha256` - checked-in source-tree marker; downloaded artifact checksums are generated and verified in the external installer drop root
 - `pitch/pitch-install-roots.example.json` - sample machine-local install-root override
 - No root-level shell, PowerShell, cmd, or Python compatibility shims are shipped
 
