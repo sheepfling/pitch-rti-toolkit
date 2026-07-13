@@ -7,6 +7,7 @@ import ctypes
 import concurrent.futures
 import os
 import queue
+import shutil
 import socket
 import subprocess
 import sys
@@ -31,7 +32,7 @@ from pitch.common import (
 )
 from pitch.execution import launcher_command as execution_launcher_command
 from pitch.execution import docker_compose_run_command, quoted_posix_command, wsl_command
-from pitch.ports import route_rti_port
+from pitch.ports import route_rti_port, route_surface_for_context
 from pitch.settings import read_settings_value
 from pitch_bootstrap import (
     ROOT,
@@ -476,13 +477,13 @@ def route_payload_command(
 def route_payload_env(route_name: str, *, wsl_distro: str | None = None, docker_env_file: Path | None = None) -> dict[str, str]:
     payload = {"PITCH_ROUTE_CONTEXT": route_name}
     if route_name == "native":
-        payload["PITCH_PORT"] = str(discovered_prti_crc_port(default=route_rti_port("route-native")))
+        payload["PITCH_PORT"] = str(route_rti_port("route-native"))
         payload["PITCH_PORT_PROFILE"] = "route-native"
         return payload
     if route_name == "wsl":
         if wsl_distro:
             payload["PITCH_WSL_DISTRO"] = wsl_distro
-        payload["PITCH_PORT"] = str(discovered_prti_crc_port(default=route_rti_port("route-wsl")))
+        payload["PITCH_PORT"] = str(route_rti_port("route-wsl"))
         payload["PITCH_PORT_PROFILE"] = "route-wsl"
         return payload
     if route_name == "docker":
@@ -768,6 +769,38 @@ def discovered_prti_crc_port(*, default: int = 8989) -> int:
         return default
 
 
+def native_smoke_home_root() -> Path:
+    staged_home_root = ARTIFACT_ROOT / "native-home"
+    staged_prti_root = staged_home_root / "prti1516e"
+    source_home_root = Path.home() / "prti1516e"
+
+    staged_prti_root.mkdir(parents=True, exist_ok=True)
+    if source_home_root.exists():
+        for item in source_home_root.iterdir():
+            destination = staged_prti_root / item.name
+            if destination.exists():
+                continue
+            if item.is_dir():
+                shutil.copytree(item, destination)
+            else:
+                shutil.copy2(item, destination)
+
+    crc_port = route_rti_port(route_surface_for_context())
+    crc_settings = staged_prti_root / "prti1516eCRC.settings"
+    if crc_settings.exists():
+        content = crc_settings.read_text(encoding="utf-8", errors="replace")
+        content = content.replace("CRC.port=8989", f"CRC.port={crc_port}")
+        crc_settings.write_text(content, encoding="utf-8")
+
+    lrc_settings = staged_prti_root / "prti1516eLRC.settings"
+    if lrc_settings.exists():
+        content = lrc_settings.read_text(encoding="utf-8", errors="replace")
+        content = content.replace("crcAddress=localhost\\:8989", f"crcAddress=localhost\\:{crc_port}")
+        lrc_settings.write_text(content, encoding="utf-8")
+
+    return staged_home_root
+
+
 def chat_sample_choices() -> list[str]:
     discovered: list[str] = []
     for variant in ("java-hla4", "java-hla4-fedpro", "cpp-hla4"):
@@ -817,30 +850,6 @@ def run_chat_process(
 ) -> tuple[int, str]:
     stdin_payload = f"{host}\n{username}\n{message}\n{final_message}\n"
 
-    if is_windows_platform() and hasattr(subprocess, "CREATE_NEW_CONSOLE"):
-        try:
-            process = subprocess.Popen(
-                command,
-                cwd=str(cwd),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
-            )
-        except OSError as exc:
-            raise RuntimeError(f"Could not start chat sample: {exc}") from exc
-
-        if hasattr(process, "pid") and process.pid:
-            try:
-                _write_console_input(process.pid, stdin_payload)
-                output, _ = process.communicate(timeout=90)
-                return int(process.returncode or 0), output
-            except Exception:
-                process.kill()
-                output, _ = process.communicate()
-                return int(process.returncode or 1), output
-
     try:
         process = subprocess.Popen(
             command,
@@ -863,21 +872,27 @@ def run_chat_process(
     return int(process.returncode or 0), output
 
 
-def _build_console_key_record(char: str, *, key_down: bool) -> ctypes.Structure:
-    class KEY_EVENT_RECORD(ctypes.Structure):
-        _fields_ = [
-            ("bKeyDown", wintypes.BOOL),
-            ("wRepeatCount", wintypes.WORD),
-            ("wVirtualKeyCode", wintypes.WORD),
-            ("wVirtualScanCode", wintypes.WORD),
-            ("uChar", wintypes.WCHAR),
-            ("dwControlKeyState", wintypes.DWORD),
-        ]
+class KEY_EVENT_RECORD(ctypes.Structure):
+    _fields_ = [
+        ("bKeyDown", wintypes.BOOL),
+        ("wRepeatCount", wintypes.WORD),
+        ("wVirtualKeyCode", wintypes.WORD),
+        ("wVirtualScanCode", wintypes.WORD),
+        ("uChar", wintypes.WCHAR),
+        ("dwControlKeyState", wintypes.DWORD),
+    ]
 
+
+def _build_console_key_record(char: str, *, key_down: bool) -> KEY_EVENT_RECORD:
     record = KEY_EVENT_RECORD()
     record.bKeyDown = key_down
     record.wRepeatCount = 1
-    record.wVirtualKeyCode = 0x0D if char == "\r" else 0
+    if char == "\r":
+        record.wVirtualKeyCode = 0x0D
+    elif len(char) == 1 and char.isprintable():
+        record.wVirtualKeyCode = ord(char.upper()) & 0xFFFF
+    else:
+        record.wVirtualKeyCode = 0
     record.wVirtualScanCode = 0
     record.uChar = char
     record.dwControlKeyState = 0
@@ -906,23 +921,25 @@ def _write_console_input(pid: int, stdin_payload: str) -> None:
             return
 
         class INPUT_RECORD_UNION(ctypes.Union):
-            _fields_ = [("KeyEvent", _build_console_key_record("a", key_down=True).__class__)]
+            _fields_ = [("KeyEvent", KEY_EVENT_RECORD)]
 
         class INPUT_RECORD(ctypes.Structure):
             _anonymous_ = ("Event",)
             _fields_ = [("EventType", wintypes.WORD), ("Event", INPUT_RECORD_UNION)]
 
-        def _record_for(char: str) -> INPUT_RECORD:
+        def _record_for(char: str, *, key_down: bool) -> INPUT_RECORD:
             record = INPUT_RECORD()
             record.EventType = 1
-            record.KeyEvent = _build_console_key_record(char, key_down=True)
+            record.KeyEvent = _build_console_key_record(char, key_down=key_down)
             return record
 
         events: list[INPUT_RECORD] = []
         for line in stdin_payload.splitlines():
             for char in line:
-                events.append(_record_for(char))
-            events.append(_record_for("\r"))
+                events.append(_record_for(char, key_down=True))
+                events.append(_record_for(char, key_down=False))
+            events.append(_record_for("\r", key_down=True))
+            events.append(_record_for("\r", key_down=False))
 
         if not events:
             return
@@ -951,25 +968,47 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
     if launcher is None:
         raise RuntimeError("No installed Pitch RTI launcher was found.")
 
-    command = execution_launcher_command(launcher)
+    staged_home_root = native_smoke_home_root()
+    java_exe = launcher.parent.parent / "jre" / "bin" / "java.exe"
+    jar_path = launcher.parent.parent / "lib" / "prtifull.jar"
+    command = [
+        str(java_exe),
+        f"-Dsettings.dir={staged_home_root}",
+        f"-Duser.home={staged_home_root}",
+        "-Xmx512m",
+        "-jar",
+        str(jar_path),
+        "-nogui",
+    ]
     launch_env = os.environ.copy()
-    launch_env["PITCH_PORT"] = str(discovered_prti_crc_port(default=route_rti_port("route-native")))
-    launch_env["PITCH_PORT_PROFILE"] = "route-native"
+    launch_env["HOME"] = str(staged_home_root)
+    launch_env["USERPROFILE"] = str(staged_home_root)
+    launch_env["PRTI1516E_HOME"] = str(staged_home_root)
+    launch_env["HOMEDRIVE"] = staged_home_root.drive or launch_env.get("HOMEDRIVE", "")
+    launch_env["HOMEPATH"] = f"\\{staged_home_root.relative_to(staged_home_root.anchor).as_posix().replace('/', '\\')}"
+    port_surface = route_surface_for_context()
+    launch_env["PITCH_PORT"] = str(route_rti_port(port_surface))
+    launch_env["PITCH_PORT_PROFILE"] = port_surface
+    creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0) if is_windows_platform() else 0
     try:
         process = subprocess.Popen(
             command,
             cwd=str(launcher.parent),
-            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             env=launch_env,
+            creationflags=creationflags,
         )
     except OSError as exc:
         raise RuntimeError(f"Could not start the Pitch RTI launcher: {exc}") from exc
 
     output_lines: list[str] = []
     line_queue: queue.Queue[str] = queue.Queue()
+    host = os.environ.get("PITCH_RTI_SMOKE_HOST", "localhost")
+    port_surface = route_surface_for_context()
+    port = route_rti_port(port_surface)
+
     def _drain_stdout() -> None:
         if process.stdout is None:
             return
@@ -978,9 +1017,67 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
             line_queue.put(line)
 
     threading.Thread(target=_drain_stdout, daemon=True).start()
-    if process.stdin is not None:
-        process.stdin.write("HELP\n")
-        process.stdin.flush()
+    _write_console_input(process.pid, "HELP\n")
+
+    def _click_license_accept_once() -> bool:
+        if not is_windows_platform():
+            return False
+        try:
+            import ctypes.wintypes as _wintypes
+
+            user32 = ctypes.windll.user32
+            rect = _wintypes.RECT()
+            hwnd = None
+
+            def _enum_windows_callback(candidate_hwnd, _lparam):
+                nonlocal hwnd
+                pid = _wintypes.DWORD()
+                user32.GetWindowThreadProcessId(candidate_hwnd, ctypes.byref(pid))
+                if pid.value != process.pid:
+                    return True
+                length = user32.GetWindowTextLengthW(candidate_hwnd)
+                title_buffer = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(candidate_hwnd, title_buffer, length + 1)
+                title = title_buffer.value.strip()
+                if title in {"pRTI License", "Pitch pRTI Friendly Error"}:
+                    hwnd = candidate_hwnd
+                    return False
+                return True
+
+            enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, _wintypes.HWND, _wintypes.LPARAM)(_enum_windows_callback)
+            user32.EnumWindows(enum_proc, 0)
+            if hwnd and user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                user32.ShowWindow(hwnd, 5)
+                user32.SetForegroundWindow(hwnd)
+                time.sleep(0.2)
+                left = int(rect.left)
+                top = int(rect.top)
+                width = int(rect.right - rect.left)
+                height = int(rect.bottom - rect.top)
+                xs = [left + 130, left + 190, left + 250]
+                ys = [top + height - 44, top + height - 14]
+            else:
+                xs = [1600, 1660, 1720]
+                ys = [860, 890]
+
+            for y in ys:
+                for x in xs:
+                    user32.SetCursorPos(x, y)
+                    time.sleep(0.12)
+                    user32.mouse_event(0x0002, 0, 0, 0, 0)
+                    user32.mouse_event(0x0004, 0, 0, 0, 0)
+                    time.sleep(0.25)
+            return True
+        except Exception:
+            return False
+
+    def _click_license_accept_loop() -> None:
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline and process.poll() is None:
+            _click_license_accept_once()
+            time.sleep(0.75)
+
+    threading.Thread(target=_click_license_accept_loop, daemon=True).start()
 
     deadline = time.monotonic() + 45.0
     try:
@@ -995,17 +1092,21 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
             except queue.Empty:
                 continue
             if line:
-                if "Available commands:" in line or "CRC listening on adapters" in line:
-                    host = os.environ.get("PITCH_RTI_SMOKE_HOST", "localhost")
-                    if "CRC listening on adapters" in line:
-                        adapters = line.split("CRC listening on adapters", 1)[1].strip().lstrip(":").strip()
+                if (
+                    "Available commands:" in line
+                    or "CRC listening on adapters" in line
+                    or "CRC listening on port" in line
+                ):
+                    if "adapters" in line:
+                        adapters = line.split("adapters", 1)[1].strip().lstrip(":").strip()
                         candidate = adapters.split(",", 1)[0].strip()
                         if candidate:
                             host = candidate
-                    port = discovered_prti_crc_port(default=route_rti_port("route-native"))
                     if not _wait_for_tcp_port(host, port):
                         break
                     return process, f"{host}:{port}"
+            if _wait_for_tcp_port(host, port, timeout_seconds=0.1, interval_seconds=0.05):
+                return process, f"{host}:{port}"
     except Exception:
         process.kill()
         raise
@@ -1124,11 +1225,12 @@ def run_start_action(
         raise RuntimeError(f"No installed launcher found for {action.label}. Run `pitch setup` first, or use `pitch status` to inspect the install.")
     print(f"Launching {action.label} from {launcher}...")
     launch_env: dict[str, str] = {}
+    port_surface = route_surface_for_context()
     if getattr(args, "port", None) is not None:
         launch_env["PITCH_PORT"] = str(args.port)
     else:
-        launch_env["PITCH_PORT"] = str(discovered_prti_crc_port(default=route_rti_port("route-native")))
-    launch_env["PITCH_PORT_PROFILE"] = "route-native"
+        launch_env["PITCH_PORT"] = str(route_rti_port(port_surface))
+    launch_env["PITCH_PORT_PROFILE"] = port_surface
     if getattr(args, "ports_config", None):
         launch_env["PITCH_PORTS_CONFIG"] = str((workspace_root / args.ports_config).resolve() if not Path(args.ports_config).is_absolute() else Path(args.ports_config))
     launch_program(launcher, env=launch_env)

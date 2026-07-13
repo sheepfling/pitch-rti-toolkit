@@ -86,3 +86,11 @@ def route_rti_port(surface: str, *, family: str | None = None) -> int:
 def route_webview_port(surface: str, *, family: str | None = None) -> int:
     return route_port_profile(surface, family=family).webview
 
+
+def route_surface_for_context(route_context: str | None = None) -> str:
+    normalized = (route_context or os.environ.get("PITCH_ROUTE_CONTEXT", "")).strip().lower()
+    if normalized == "wsl":
+        return "route-wsl"
+    if normalized == "docker":
+        return "route-docker"
+    return "route-native"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import pitch.cli as pitch_cli
@@ -166,6 +167,17 @@ def test_route_port_profiles_are_stable_and_distinct(monkeypatch) -> None:
     assert pitch_bootstrap.resolve_artifact_root(pitch_bootstrap.ROOT) == Path(r"C:\tmp\pitch-artifacts")
 
 
+def test_route_surface_for_context_maps_context_to_port_profile(monkeypatch) -> None:
+    monkeypatch.delenv("PITCH_ROUTE_CONTEXT", raising=False)
+    assert pitch_ports.route_surface_for_context() == "route-native"
+
+    monkeypatch.setenv("PITCH_ROUTE_CONTEXT", "wsl")
+    assert pitch_ports.route_surface_for_context() == "route-wsl"
+
+    monkeypatch.setenv("PITCH_ROUTE_CONTEXT", "docker")
+    assert pitch_ports.route_surface_for_context() == "route-docker"
+
+
 def test_installer_drop_root_can_be_overridden_directly(monkeypatch) -> None:
     monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", r"C:\tmp\pitch-installers")
     assert resolve_installer_drop_root() == Path(r"C:\tmp\pitch-installers")
@@ -277,48 +289,38 @@ def test_run_installer_uses_plain_quiet_flag(monkeypatch, tmp_path) -> None:
     assert captured["cwd"] == str(tmp_path)
 
 
-def test_rti_smoke_starts_the_console_and_reads_help(monkeypatch, capsys, tmp_path) -> None:
-    launcher = tmp_path / "pRTI1516e-nogui.bat"
-    launcher.write_text("@echo off\n", encoding="utf-8")
-    monkeypatch.setattr(pitch_cli.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(pitch_cli, "_discover_installed_runtime_launcher", lambda component_key: launcher if component_key == "prti1516e" else None)
-
+def test_rti_smoke_uses_the_startup_helper_and_cleans_up(monkeypatch, capsys) -> None:
     captured = {}
 
     class _Process:
-        returncode = 0
+        def __init__(self):
+            self.returncode = 0
+            self.killed = False
 
-        def communicate(self, input=None, timeout=None):
-            captured["input"] = input
-            captured["timeout"] = timeout
-            return (
-                "RTIexec for Pitch pRTI(tm) Free v5.5.10 build 9905 for IEEE 1516-2010\n"
-                "Type HELP for help\n"
-                "pRTI> Available commands:\n"
-                "  HELP\n"
-                "  QUIT\n",
-                "",
-            )
+        def poll(self):
+            return None
 
         def kill(self):
-            captured["killed"] = True
+            self.killed = True
 
-    def _fake_popen(command, cwd=None, stdin=None, stdout=None, stderr=None, text=None, env=None, creationflags=None):
-        captured["command"] = command
-        captured["cwd"] = cwd
-        captured["env"] = env
-        return _Process()
+    process = _Process()
 
-    monkeypatch.setattr(pitch_cli.subprocess, "Popen", _fake_popen)
+    def _fake_start_prti_crc():
+        captured["called"] = True
+        return process, "127.0.0.1:18089"
+
+    def _fake_mark_rti_smoke_result(passed, detail):
+        captured["result"] = (passed, detail)
+
+    monkeypatch.setattr(pitch_cli, "_start_prti_crc", _fake_start_prti_crc)
+    monkeypatch.setattr(pitch_cli, "_mark_rti_smoke_result", _fake_mark_rti_smoke_result)
 
     assert main(["rti", "smoke"]) == 0
     captured_out = capsys.readouterr()
     assert "Pitch RTI smoke test passed." in captured_out.out
-    assert captured["command"][0:2] == ["cmd.exe", "/c"]
-    assert captured["command"][2] == str(launcher)
-    assert captured["cwd"] == str(launcher.parent)
-    assert captured["input"] == "HELP\nQUIT\n"
-    assert captured["timeout"] == 30
+    assert captured["called"] is True
+    assert captured["result"] == (True, "127.0.0.1:18089")
+    assert process.killed is True
 
 
 def test_rti_smoke_chat_lists_discovered_variants(monkeypatch, capsys, tmp_path) -> None:
@@ -384,8 +386,19 @@ def test_rti_smoke_chat_runs_two_federates(monkeypatch, capsys, tmp_path) -> Non
 
 def test_chat_smoke_defaults_to_local_host_first(monkeypatch) -> None:
     monkeypatch.delenv("PITCH_RTI_SMOKE_HOST", raising=False)
+    monkeypatch.delenv("PITCH_ROUTE_CONTEXT", raising=False)
     candidates = pitch_cli._chat_smoke_host_candidates()
-    default_port = pitch_cli._discovered_prti_crc_port(default=8989)
+    default_port = pitch_ports.route_rti_port("route-native")
+
+    assert candidates[0] == f"127.0.0.1:{default_port}"
+    assert candidates[1] == f"localhost:{default_port}"
+
+
+def test_chat_smoke_defaults_follow_the_active_route_context(monkeypatch) -> None:
+    monkeypatch.delenv("PITCH_RTI_SMOKE_HOST", raising=False)
+    monkeypatch.setenv("PITCH_ROUTE_CONTEXT", "wsl")
+    candidates = pitch_cli._chat_smoke_host_candidates()
+    default_port = pitch_ports.route_rti_port("route-wsl")
 
     assert candidates[0] == f"127.0.0.1:{default_port}"
     assert candidates[1] == f"localhost:{default_port}"
@@ -912,7 +925,7 @@ def test_route_run_wsl_translates_windows_paths(monkeypatch) -> None:
     command = captured["command"]
     assert command[0] == "wsl.exe"
     assert command[1:4] == ["-d", "Ubuntu", "--cd"]
-    assert command[4:6] == ["/mnt/c/Users/peanu/GIT/sheepfling/pitch-rti-toolkit", "bash"]
+    assert command[4:6] == [pitch_cli.ROOT.as_posix(), "bash"]
     assert command[-1] == "python3 -m pitch setup --source /mnt/c/Users/peanu/Downloads/pitch"
     assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "wsl"
     assert captured["env"]["PITCH_WSL_DISTRO"] == "Ubuntu"
@@ -969,7 +982,7 @@ def test_route_run_wsl_uses_default_distribution_when_not_selected(monkeypatch) 
     assert main(["route", "run", "wsl", "verify"]) == 0
     command = captured["command"]
     assert command[0] == "wsl.exe"
-    assert command[1:6] == ["-d", "Ubuntu", "--cd", "/mnt/c/Users/peanu/GIT/sheepfling/pitch-rti-toolkit", "bash"]
+    assert command[1:6] == ["-d", "Ubuntu", "--cd", pitch_cli.ROOT.as_posix(), "bash"]
     assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "wsl"
     assert captured["env"]["PITCH_WSL_DISTRO"] == "Ubuntu"
 
@@ -1563,6 +1576,28 @@ def test_start_prti1516e_prints_the_settings_summary(monkeypatch, capsys) -> Non
     assert main(["start", "prti1516e"]) == 0
     captured = capsys.readouterr()
     assert "CRC settings discovery:" in captured.out
+
+
+def test_run_start_action_uses_the_active_route_port_profile(monkeypatch, tmp_path) -> None:
+    launcher = tmp_path / "pRTI1516e-nogui.bat"
+    launcher.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setenv("PITCH_ROUTE_CONTEXT", "docker")
+    monkeypatch.setattr(pitch_cli, "_discover_installed_runtime_launcher", lambda component_key: launcher if component_key == "prti1516e" else None)
+
+    captured = {}
+
+    def _fake_launch_program(path, env=None):
+        captured["path"] = path
+        captured["env"] = env
+
+    monkeypatch.setattr(pitch_cli, "_launch_program", _fake_launch_program)
+
+    action = pitch_cli.StartAction("3", "prti1516e-free", "runtime", launcher, "prti1516e")
+    pitch_cli._run_start_action(action, argparse.Namespace(port=None, ports_config=None))
+
+    assert captured["path"] == launcher
+    assert captured["env"]["PITCH_PORT"] == str(pitch_ports.route_rti_port("route-docker"))
+    assert captured["env"]["PITCH_PORT_PROFILE"] == "route-docker"
 
 
 def test_start_can_enable_hla4_preview_before_launch(monkeypatch, tmp_path, capsys) -> None:

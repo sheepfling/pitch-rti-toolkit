@@ -86,12 +86,11 @@ from pitch.docker_vendor import (
     write_docker_env_file as _write_docker_env_file,
     VENDOR_DOCKER_COMPOSE_PATH as _VENDOR_DOCKER_COMPOSE_PATH,
 )
-from pitch.ports import route_rti_port, route_webview_port
+from pitch.ports import route_rti_port, route_surface_for_context, route_webview_port
 from pitch.routes import (
     chat_launcher_command as _chat_launcher_command,
     chat_sample_choices as _chat_sample_choices,
     discovered_chat_sample_launcher as _discover_chat_sample_launcher,
-    discovered_prti_crc_port as _discovered_prti_crc_port,
     discovered_installed_runtime_launcher as _discover_installed_runtime_launcher_impl,
     discovered_prti_install_root as _discover_prti_install_root,
     default_route_name as _default_route_name,
@@ -115,6 +114,7 @@ from pitch.routes import (
     route_summary as _route_summary,
     run_chat_process as _run_chat_process_impl,
     run_chat_smoke_test as _run_chat_smoke_test,
+    _start_prti_crc as _start_prti_crc,
     run_route_command as _run_route_command_impl,
     install_specs_for_system as _install_specs_for_system_impl,
     run_start_action as _run_start_action_impl,
@@ -773,13 +773,13 @@ def _run_route_command(route_name: str, pitch_args: list[str], wsl_distro: str |
 def _route_payload_env(route_name: str, wsl_distro: str | None = None, docker_env_file: Path | None = None) -> dict[str, str]:
     payload = {"PITCH_ROUTE_CONTEXT": route_name}
     if route_name == "native":
-        payload["PITCH_PORT"] = str(_discovered_prti_crc_port(default=route_rti_port("route-native")))
+        payload["PITCH_PORT"] = str(route_rti_port("route-native"))
         payload["PITCH_PORT_PROFILE"] = "route-native"
         return payload
     if route_name == "wsl":
         if wsl_distro:
             payload["PITCH_WSL_DISTRO"] = wsl_distro
-        payload["PITCH_PORT"] = str(_discovered_prti_crc_port(default=route_rti_port("route-wsl")))
+        payload["PITCH_PORT"] = str(route_rti_port("route-wsl"))
         payload["PITCH_PORT_PROFILE"] = "route-wsl"
         return payload
     if route_name == "docker":
@@ -1758,7 +1758,7 @@ def _crc_host_from_log(log_file: Path) -> str | None:
 
 
 def _chat_smoke_host_candidates() -> list[str]:
-    default_port = _discovered_prti_crc_port(default=route_rti_port("route-native"))
+    default_port = route_rti_port(route_surface_for_context())
     candidates: list[str] = [f"127.0.0.1:{default_port}", f"localhost:{default_port}", "127.0.0.1", "localhost"]
 
     env_host = os.environ.get("PITCH_RTI_SMOKE_HOST")
@@ -1904,11 +1904,12 @@ def _run_start_action(action: StartAction, args: argparse.Namespace) -> None:
 
     print(f"Launching {action.label} from {launcher}...")
     launch_env: dict[str, str] = {}
+    port_surface = route_surface_for_context()
     if getattr(args, "port", None) is not None:
         launch_env["PITCH_PORT"] = str(args.port)
     else:
-        launch_env["PITCH_PORT"] = str(_discovered_prti_crc_port(default=route_rti_port("route-native")))
-    launch_env["PITCH_PORT_PROFILE"] = "route-native"
+        launch_env["PITCH_PORT"] = str(route_rti_port(port_surface))
+    launch_env["PITCH_PORT_PROFILE"] = port_surface
     if getattr(args, "ports_config", None):
         launch_env["PITCH_PORTS_CONFIG"] = str((ROOT / args.ports_config).resolve() if not Path(args.ports_config).is_absolute() else Path(args.ports_config))
 
@@ -1916,43 +1917,22 @@ def _run_start_action(action: StartAction, args: argparse.Namespace) -> None:
 
 
 def _run_rti_smoke_test() -> int:
-    launcher = _discover_installed_runtime_launcher("prti1516e")
-    if launcher is None:
-        print("No installed Pitch RTI launcher was found.", file=sys.stderr)
-        return 1
-
-    command = _launcher_command(launcher)
-
     try:
-        process = subprocess.Popen(
-            command,
-            cwd=str(launcher.parent),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        try:
-            output, _ = process.communicate("HELP\nQUIT\n", timeout=30)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            output, _ = process.communicate()
+        process, host_port = _start_prti_crc()
     except OSError as exc:
         print(f"Could not start the Pitch RTI launcher: {exc}", file=sys.stderr)
         return 1
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
-    if "Available commands:" in output and "HELP" in output:
-        _mark_rti_smoke_result(True, str(launcher))
+    try:
+        _mark_rti_smoke_result(True, host_port)
         print("Pitch RTI smoke test passed.")
         return 0
-
-    _mark_rti_smoke_result(False, str(launcher))
-    print("Pitch RTI smoke test failed.", file=sys.stderr)
-    print(f"Launcher: {launcher}", file=sys.stderr)
-    print(f"Return code: {process.returncode}", file=sys.stderr)
-    if output:
-        print(output, file=sys.stderr)
-    return 1
+    finally:
+        if process.poll() is None:
+            process.kill()
 
 
 def handle_setup(args: argparse.Namespace) -> int:
