@@ -1043,6 +1043,7 @@ def build_parser() -> argparse.ArgumentParser:
     rti_parser.set_defaults(handler=handle_rti)
 
     rti_smoke_parser = rti_subparsers.add_parser("smoke", help="Launch the installed RTI console and verify it answers HELP.")
+    rti_smoke_parser.add_argument("--allow-locked-session", action="store_true", help="Bypass the lock-screen guard for investigation.")
     rti_smoke_subparsers = rti_smoke_parser.add_subparsers(dest="smoke_command")
     rti_smoke_parser.set_defaults(handler=handle_rti_smoke)
 
@@ -3349,6 +3350,7 @@ def handle_rti(args: argparse.Namespace) -> int:
 def handle_rti_smoke(args: argparse.Namespace) -> int:
     if getattr(args, "smoke_command", None) == "chat":
         return int(args.handler(args))
+    setattr(_start_prti_crc, "_allow_locked_session", bool(getattr(args, "allow_locked_session", False)))
     return _run_rti_smoke_test()
 
 

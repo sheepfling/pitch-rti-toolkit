@@ -327,17 +327,55 @@ def test_rti_smoke_uses_the_startup_helper_and_cleans_up(monkeypatch, capsys) ->
     assert process.killed is True
 
 
-def test_rti_smoke_fails_fast_when_the_windows_session_is_locked(monkeypatch) -> None:
+def test_rti_smoke_rejects_locked_sessions_by_default(monkeypatch, tmp_path) -> None:
+    launcher = tmp_path / "pRTI1516e-nogui.bat"
+    launcher.write_text("@echo off\n", encoding="utf-8")
     monkeypatch.setattr(pitch_routes, "_windows_session_is_locked", lambda: True)
-    monkeypatch.setattr(pitch_routes, "discovered_installed_runtime_launcher", lambda component_key: Path(r"C:\Program Files\prti1516e\bin\pRTI1516e-cmdline-gui.exe"))
+    monkeypatch.setattr(pitch_routes, "discovered_installed_runtime_launcher", lambda component_key: launcher)
 
     def _unexpected_popen(*args, **kwargs):
-        raise AssertionError("Popen should not be called when the session is locked")
+        raise AssertionError("Popen should not be called without the lock override")
 
     monkeypatch.setattr(pitch_routes.subprocess, "Popen", _unexpected_popen)
 
     with pytest.raises(RuntimeError, match="Windows session appears to be locked"):
         pitch_routes._start_prti_crc()
+
+
+def test_rti_smoke_can_override_the_locked_session_guard(monkeypatch, tmp_path) -> None:
+    launcher = tmp_path / "pRTI1516e-nogui.bat"
+    launcher.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(pitch_routes, "_windows_session_is_locked", lambda: True)
+    monkeypatch.setattr(pitch_routes, "discovered_installed_runtime_launcher", lambda component_key: launcher)
+    monkeypatch.setattr(pitch_routes, "native_smoke_home_root", lambda: tmp_path / "smoke-home")
+    monkeypatch.setattr(pitch_routes, "_accept_prti_license_once", lambda: False)
+    setattr(pitch_routes._start_prti_crc, "_allow_locked_session", True)
+
+    class _Process:
+        def __init__(self):
+            self.stdout = iter(["RTIexec for Pitch pRTI(tm) Free v5.5.10 build 9905 for IEEE 1516-2010\n", "CRC listening on port 18089, adapters localhost\n"])
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            return None
+
+    captured = {}
+
+    def _fake_popen(command, cwd=None, stdin=None, stdout=None, stderr=None, text=None, env=None):
+        captured["command"] = command
+        captured["cwd"] = cwd
+        captured["env"] = env
+        return _Process()
+
+    monkeypatch.setattr(pitch_routes.subprocess, "Popen", _fake_popen)
+
+    process, host_port = pitch_routes._start_prti_crc()
+
+    assert host_port == "localhost:18089"
+    assert captured["command"]
+    assert process.poll() is None
 
 
 def test_rti_smoke_chat_lists_discovered_variants(monkeypatch, capsys, tmp_path) -> None:

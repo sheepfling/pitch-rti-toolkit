@@ -979,9 +979,6 @@ def _accept_prti_license_once() -> bool:
 
 
 def _accept_prti_license_loop(process: subprocess.Popen[str], launcher: Path) -> None:
-    if prti_license_state_matches(launcher):
-        return
-
     deadline = time.monotonic() + 20.0
     while time.monotonic() < deadline and process.poll() is None:
         if _accept_prti_license_once():
@@ -1274,8 +1271,8 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
     launcher = discovered_installed_runtime_launcher("prti1516e")
     if launcher is None:
         raise RuntimeError("No installed Pitch RTI launcher was found.")
-    if _windows_session_is_locked():
-        raise RuntimeError("Windows session appears to be locked. Unlock the screen and rerun the Pitch proof.")
+    if not getattr(_start_prti_crc, "_allow_locked_session", False) and _windows_session_is_locked():
+        raise RuntimeError("Windows session appears to be locked. Unlock the screen or pass the lock override for investigation.")
 
     port_surface = route_surface_for_context()
     staged_home_root = native_smoke_home_root()
@@ -1397,8 +1394,8 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
                     for probe_host in probe_hosts:
                         if _wait_for_tcp_port(probe_host, port, timeout_seconds=0.25, interval_seconds=0.1):
                             return process, f"{reported_host}:{port}"
-            if _log_reports_ready():
-                return process, f"{reported_host}:{port}"
+                if _log_reports_ready():
+                    return process, f"{reported_host}:{port}"
             for probe_host in probe_hosts:
                 if _wait_for_tcp_port(probe_host, port, timeout_seconds=0.05, interval_seconds=0.05):
                     return process, f"{reported_host}:{port}"
