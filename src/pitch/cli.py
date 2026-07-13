@@ -840,6 +840,16 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--rti-smoke", action="store_true", help="Also run the installed RTI smoke test when available.")
     verify_parser.set_defaults(handler=handle_verify)
 
+    prove_parser = subparsers.add_parser("prove", help="Prove the installed RTI by starting it and running the chat smoke test.")
+    prove_parser.add_argument(
+        "--variant",
+        choices=["auto", "java-hla4", "java-hla4-fedpro", "cpp-hla4"],
+        default="auto",
+        help="Choose which chat sample family to use for the proof step.",
+    )
+    prove_parser.add_argument("--list", action="store_true", help="List the discovered chat sample variants and exit.")
+    prove_parser.set_defaults(handler=handle_prove)
+
     preflight_parser = subparsers.add_parser("preflight", help="Check Docker, bundle, RTI, and port readiness.")
     preflight_parser.add_argument("--config", default=str(ASSET_ROOT / "ports.conf"), help="Port probe configuration file.")
     preflight_parser.add_argument("--json", action="store_true", help="Print the preflight report as JSON.")
@@ -1748,12 +1758,12 @@ def _crc_host_from_log(log_file: Path) -> str | None:
     for line in reversed(contents.splitlines()):
         host_match = re.search(r"host:([^,;/\s]+)", line)
         if host_match:
-            return host_match.group(1).strip()
+            return host_match.group(1).strip().lstrip("/")
         if "CRC listening on adapters" in line:
             adapters = line.split("CRC listening on adapters", 1)[1].strip().lstrip(":").strip()
             candidate = adapters.split(",", 1)[0].strip()
             if candidate:
-                return candidate
+                return candidate.lstrip("/")
     return None
 
 
@@ -1763,7 +1773,7 @@ def _chat_smoke_host_candidates() -> list[str]:
 
     env_host = os.environ.get("PITCH_RTI_SMOKE_HOST")
     if env_host:
-        candidate = env_host.strip()
+        candidate = env_host.strip().lstrip("/")
         if candidate and candidate not in candidates:
             candidates.insert(0, candidate)
 
@@ -1817,39 +1827,56 @@ def _run_chat_smoke_test(variant: str = "auto", *, list_only: bool = False) -> i
     print(f"Chat smoke variant: {chosen_variant}")
     print(f"Chat sample launcher: {launcher}")
     command = _chat_launcher_command(launcher)
-    host = _chat_smoke_host_candidates()[0]
+    try:
+        rti_process, host = _start_prti_crc()
+    except OSError as exc:
+        print(f"Could not start the Pitch RTI launcher: {exc}", file=sys.stderr)
+        return 1
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
     messages = [
         ("pitch-smoke-alpha", "Hello from pitch-smoke-alpha"),
         ("pitch-smoke-bravo", "Hello from pitch-smoke-bravo"),
     ]
     print(f"Chat smoke CRC host: {host}")
+    time.sleep(3.0)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [
-            pool.submit(_run_chat_process, command, cwd=launcher.parent, username=username, host=host, message=message)
-            for username, message in messages
-        ]
-        results = [future.result() for future in futures]
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(_run_chat_process, command, cwd=launcher.parent, username=username, host=host, message=message)
+                for username, message in messages
+            ]
+            results = [future.result() for future in futures]
 
-    failures: list[str] = []
-    for index, (returncode, output) in enumerate(results, start=1):
-        if returncode != 0:
-            failures.append(f"chat federate {index} exited with {returncode}")
-            print(f"--- chat federate {index} output ---")
-            print(output.rstrip())
-        elif "Type messages you want to send" not in output:
-            failures.append(f"chat federate {index} did not reach the chat prompt")
-            print(f"--- chat federate {index} output ---")
-            print(output.rstrip())
+        failures: list[str] = []
+        for index, (returncode, output) in enumerate(results, start=1):
+            if returncode != 0:
+                failures.append(f"chat federate {index} exited with {returncode}")
+                print(f"--- chat federate {index} output ---")
+                print(output.rstrip())
+            elif "Type messages you want to send" not in output:
+                failures.append(f"chat federate {index} did not reach the chat prompt")
+                print(f"--- chat federate {index} output ---")
+                print(output.rstrip())
 
-    if failures:
-        print("Pitch chat smoke test failed.", file=sys.stderr)
-        for failure in failures:
-            print(f"  - {failure}", file=sys.stderr)
-        return 1
+        if failures:
+            print("Pitch chat smoke test failed.", file=sys.stderr)
+            for failure in failures:
+                print(f"  - {failure}", file=sys.stderr)
+            return 1
 
-    print("Pitch chat smoke test passed.")
-    return 0
+        print("Pitch chat smoke test passed.")
+        return 0
+    finally:
+        if rti_process.poll() is None:
+            try:
+                rti_process.communicate("QUIT\n", timeout=30)
+            except subprocess.TimeoutExpired:
+                rti_process.kill()
+                rti_process.communicate()
 
 
 def _start_actions() -> list[StartAction]:
@@ -3242,6 +3269,19 @@ def handle_rti_smoke(args: argparse.Namespace) -> int:
 
 def handle_rti_smoke_chat(args: argparse.Namespace) -> int:
     return _run_chat_smoke_test(getattr(args, "variant", "auto"), list_only=getattr(args, "list", False))
+
+
+def handle_prove(args: argparse.Namespace) -> int:
+    variant = getattr(args, "variant", "auto")
+    if getattr(args, "list", False):
+        return _run_chat_smoke_test(variant, list_only=True)
+
+    if _run_rti_smoke_test() != 0:
+        return 1
+    if _run_chat_smoke_test(variant) != 0:
+        return 1
+    print("Pitch proof passed.")
+    return 0
 
 
 def _run_route_command(route_name: str, pitch_args: list[str], wsl_distro: str | None = None) -> int:

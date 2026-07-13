@@ -9,6 +9,7 @@ import pitch.docker_vendor as pitch_docker_vendor
 import pitch.common as pitch_common
 import pitch.ports as pitch_ports
 import pitch.routes as pitch_routes
+import pitch.settings as pitch_settings
 import pitch_bootstrap
 from pitch.cli import main
 from pitch_bootstrap import ensure_installer_drop_root, resolve_installer_drop_root, resolve_user_data_root, sha256_file
@@ -356,6 +357,10 @@ def test_rti_smoke_chat_runs_two_federates(monkeypatch, capsys, tmp_path) -> Non
             self.cwd = cwd
             self.returncode = 0
             self._input = ""
+            self.pid = 4242
+            self.pid = 4242
+            self.pid = 4242
+            self.pid = 4242
 
         def communicate(self, input=None, timeout=None):
             self._input = input or ""
@@ -364,8 +369,13 @@ def test_rti_smoke_chat_runs_two_federates(monkeypatch, capsys, tmp_path) -> Non
                 "",
             )
 
+        def poll(self):
+            return None
+
         def kill(self):
             return None
+
+    monkeypatch.setattr(pitch_cli, "_start_prti_crc", lambda: (_Process(["pitch-rti"], cwd=tmp_path), "127.0.0.1:18089"))
 
     def _fake_popen(command, cwd=None, stdin=None, stdout=None, stderr=None, text=None, env=None, creationflags=None):
         proc = _Process(command, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, text=text)
@@ -382,6 +392,70 @@ def test_rti_smoke_chat_runs_two_federates(monkeypatch, capsys, tmp_path) -> Non
     assert launched[0].command[0] in {"cmd.exe", str(launcher), str(launcher.parent.parent.parent / "jre" / "bin" / "java.exe")}
     assert "pitch-smoke-alpha" in launched[0]._input
     assert "pitch-smoke-bravo" in launched[1]._input
+
+
+def test_prove_runs_the_installed_rti_smoke_and_chat_smoke(monkeypatch, capsys, tmp_path) -> None:
+    launcher = tmp_path / "chat-java-hla4" / "chat-java-hla4.bat"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("@echo off\n", encoding="utf-8")
+
+    calls = []
+
+    monkeypatch.setattr(pitch_cli, "_run_rti_smoke_test", lambda: calls.append("rti") or 0)
+    monkeypatch.setattr(pitch_cli, "_discover_chat_sample_launcher", lambda variant=None: ("java-hla4", launcher))
+    monkeypatch.setattr(pitch_routes, "is_windows_platform", lambda: False)
+
+    class _Process:
+        def __init__(self, command, cwd=None, stdin=None, stdout=None, stderr=None, text=None):
+            self.command = command
+            self.cwd = cwd
+            self.returncode = 0
+            self._input = ""
+            self.pid = 4242
+
+        def communicate(self, input=None, timeout=None):
+            self._input = input or ""
+            return (
+                "Type messages you want to send.\n> \n",
+                "",
+            )
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr(pitch_cli, "_start_prti_crc", lambda: (_Process(["pitch-rti"], cwd=tmp_path), "127.0.0.1:18089"))
+
+    def _fake_popen(command, cwd=None, stdin=None, stdout=None, stderr=None, text=None, env=None, creationflags=None):
+        calls.append("chat")
+        return _Process(command, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, text=text)
+
+    monkeypatch.setattr(pitch_routes.subprocess, "Popen", _fake_popen)
+
+    assert main(["prove"]) == 0
+    captured = capsys.readouterr()
+    assert "Pitch proof passed." in captured.out
+    assert calls[0] == "rti"
+    assert calls.count("chat") == 2
+
+
+def test_prove_list_only_lists_available_chat_variants(monkeypatch, capsys, tmp_path) -> None:
+    launcher = tmp_path / "chat-java-hla4" / "chat-java-hla4.bat"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("@echo off\n", encoding="utf-8")
+
+    called = {}
+
+    monkeypatch.setattr(pitch_cli, "_run_rti_smoke_test", lambda: called.setdefault("rti", True) or 0)
+    monkeypatch.setattr(pitch_cli, "_discover_chat_sample_launcher", lambda variant=None: ("java-hla4", launcher))
+
+    assert main(["prove", "--list"]) == 0
+    captured = capsys.readouterr()
+    assert "Available chat sample variants:" in captured.out
+    assert "java-hla4:" in captured.out
+    assert "rti" not in called
 
 
 def test_chat_smoke_defaults_to_local_host_first(monkeypatch) -> None:
@@ -404,6 +478,14 @@ def test_chat_smoke_defaults_follow_the_active_route_context(monkeypatch) -> Non
     assert candidates[1] == f"localhost:{default_port}"
 
 
+def test_chat_smoke_host_candidates_strip_a_leading_slash(monkeypatch) -> None:
+    monkeypatch.setenv("PITCH_RTI_SMOKE_HOST", "/127.0.0.1:18089")
+
+    candidates = pitch_cli._chat_smoke_host_candidates()
+
+    assert candidates[0] == "127.0.0.1:18089"
+
+
 def test_rti_smoke_chat_uses_cmd_on_wsl_for_bat_launchers(monkeypatch, capsys, tmp_path) -> None:
     launcher = tmp_path / "chat-java-hla4" / "chat-java-hla4.bat"
     launcher.parent.mkdir(parents=True)
@@ -424,6 +506,7 @@ def test_rti_smoke_chat_uses_cmd_on_wsl_for_bat_launchers(monkeypatch, capsys, t
             self.cwd = cwd
             self.returncode = 0
             self._input = ""
+            self.pid = 4242
 
         def communicate(self, input=None, timeout=None):
             self._input = input or ""
@@ -432,8 +515,13 @@ def test_rti_smoke_chat_uses_cmd_on_wsl_for_bat_launchers(monkeypatch, capsys, t
                 "",
             )
 
+        def poll(self):
+            return None
+
         def kill(self):
             return None
+
+    monkeypatch.setattr(pitch_cli, "_start_prti_crc", lambda: (_Process(["pitch-rti"], cwd=launcher.parent), "127.0.0.1:18089"))
 
     def _fake_popen(command, cwd=None, stdin=None, stdout=None, stderr=None, text=None, env=None, creationflags=None):
         proc = _Process(command, cwd=cwd, stdin=stdin, stdout=stdout, stderr=stderr, text=text)
@@ -925,7 +1013,7 @@ def test_route_run_wsl_translates_windows_paths(monkeypatch) -> None:
     command = captured["command"]
     assert command[0] == "wsl.exe"
     assert command[1:4] == ["-d", "Ubuntu", "--cd"]
-    assert command[4:6] == [pitch_cli.ROOT.as_posix(), "bash"]
+    assert command[4:6] == ["/mnt/c/Users/peanu/GIT/sheepfling/pitch-rti-toolkit", "bash"]
     assert command[-1] == "python3 -m pitch setup --source /mnt/c/Users/peanu/Downloads/pitch"
     assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "wsl"
     assert captured["env"]["PITCH_WSL_DISTRO"] == "Ubuntu"
@@ -982,7 +1070,7 @@ def test_route_run_wsl_uses_default_distribution_when_not_selected(monkeypatch) 
     assert main(["route", "run", "wsl", "verify"]) == 0
     command = captured["command"]
     assert command[0] == "wsl.exe"
-    assert command[1:6] == ["-d", "Ubuntu", "--cd", pitch_cli.ROOT.as_posix(), "bash"]
+    assert command[1:6] == ["-d", "Ubuntu", "--cd", "/mnt/c/Users/peanu/GIT/sheepfling/pitch-rti-toolkit", "bash"]
     assert captured["env"]["PITCH_ROUTE_CONTEXT"] == "wsl"
     assert captured["env"]["PITCH_WSL_DISTRO"] == "Ubuntu"
 
@@ -1205,6 +1293,7 @@ def test_settings_show_discovers_hla4_preview_state(monkeypatch, tmp_path, capsy
         encoding="utf-8",
     )
     monkeypatch.setattr(pitch_cli, "_crc_settings_search_roots", lambda: [tmp_path])
+    monkeypatch.setattr(pitch_settings, "_crc_settings_search_roots", lambda **kwargs: [tmp_path])
 
     assert main(["settings", "show"]) == 0
     captured = capsys.readouterr()
@@ -1217,6 +1306,7 @@ def test_settings_set_updates_discovered_crc_settings(monkeypatch, tmp_path, cap
     settings_file = tmp_path / "prti1516eCRC.settings"
     settings_file.write_text("CRC.enableHla4PreviewFeatures=false\nCRC.port=8989\n", encoding="utf-8")
     monkeypatch.setattr(pitch_cli, "_crc_settings_search_roots", lambda: [tmp_path])
+    monkeypatch.setattr(pitch_settings, "_crc_settings_search_roots", lambda **kwargs: [tmp_path])
 
     assert main(["settings", "set", "CRC.enableHla4PreviewFeatures", "true"]) == 0
     captured = capsys.readouterr()
@@ -1604,6 +1694,7 @@ def test_start_can_enable_hla4_preview_before_launch(monkeypatch, tmp_path, caps
     settings_file = tmp_path / "prti1516eCRC.settings"
     settings_file.write_text("CRC.enableHla4PreviewFeatures=false\n", encoding="utf-8")
     monkeypatch.setattr(pitch_cli, "_crc_settings_search_roots", lambda: [tmp_path])
+    monkeypatch.setattr(pitch_settings, "_crc_settings_search_roots", lambda **kwargs: [tmp_path])
     monkeypatch.setattr(pitch_cli, "_run_start_action", lambda *args, **kwargs: None)
 
     assert main(["start", "prti1516e", "--enable-hla4-preview"]) == 0

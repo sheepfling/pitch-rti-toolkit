@@ -852,19 +852,28 @@ def run_chat_process(
     stdin_payload = f"{host}\n{username}\n{message}\n{final_message}\n"
 
     try:
+        popen_kwargs: dict[str, object] = {}
+        if is_windows_platform() and hasattr(subprocess, "CREATE_NEW_CONSOLE"):
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
+        stdin_target = None if is_windows_platform() else subprocess.PIPE
         process = subprocess.Popen(
             command,
             cwd=str(cwd),
-            stdin=subprocess.PIPE,
+            stdin=stdin_target,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            **popen_kwargs,
         )
     except OSError as exc:
         raise RuntimeError(f"Could not start chat sample: {exc}") from exc
 
     try:
-        output, _ = process.communicate(stdin_payload, timeout=90)
+        if is_windows_platform():
+            _write_console_input(process.pid, stdin_payload)
+            output, _ = process.communicate(timeout=90)
+        else:
+            output, _ = process.communicate(stdin_payload, timeout=90)
     except subprocess.TimeoutExpired:
         process.kill()
         output, _ = process.communicate()
@@ -982,7 +991,7 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
 
     output_lines: list[str] = []
     line_queue: queue.Queue[str] = queue.Queue()
-    host = os.environ.get("PITCH_RTI_SMOKE_HOST", "localhost")
+    host = "localhost"
     port_surface = route_surface_for_context()
     port = discovered_prti_crc_port(default=route_rti_port(port_surface))
 
@@ -1075,9 +1084,9 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
                 ):
                     if "adapters" in line:
                         adapters = line.split("adapters", 1)[1].strip().lstrip(":").strip()
-                        candidate = adapters.split(",", 1)[0].strip()
+                        candidate = adapters.split(",", 1)[0].strip().lstrip("/")
                         if candidate:
-                            host = candidate
+                            host = "localhost"
                     if not _wait_for_tcp_port(host, port):
                         break
                     return process, f"{host}:{port}"
@@ -1118,6 +1127,7 @@ def run_chat_smoke_test(variant: str = "auto", *, list_only: bool = False) -> in
     rti_process, host = _start_prti_crc()
     messages = [("pitch-smoke-alpha", "Hello from pitch-smoke-alpha"), ("pitch-smoke-bravo", "Hello from pitch-smoke-bravo")]
     try:
+        time.sleep(3.0)
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             futures = [
                 pool.submit(run_chat_process, command, cwd=launcher.parent, username=username, host=host, message=message)

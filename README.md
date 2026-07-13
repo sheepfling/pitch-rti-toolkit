@@ -9,6 +9,7 @@ It is intended to be cloned directly or added as a git submodule from a larger p
 
 `pitch` is the canonical entry point after installation. The `setup`, `verify`, `status`, `probe`, `doctor`, and `config` subcommands all share the same Python implementation.
 `pitch preflight` gives you a cached readiness report for Docker, the bundle, the RTI launcher, and configured ports.
+`pitch prove` is the one-command installed-RTI proof path: it starts the installed RTI, then runs the chat smoke.
 
 For local development from a checkout, install the project in editable mode first:
 
@@ -193,6 +194,12 @@ To try two chat federates against the installed RTI, use:
 
 ```bash
 pitch rti smoke chat
+```
+
+If you want a single command that proves the installed RTI and then runs the chat smoke, use:
+
+```bash
+pitch prove
 ```
 
 That command prefers the Java HLA 4 chat sample by default, but `pitch rti smoke chat --list` will show the discovered `java-hla4`, `java-hla4-fedpro`, and `cpp-hla4` variants when they are present.
