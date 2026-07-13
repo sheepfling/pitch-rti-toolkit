@@ -723,6 +723,18 @@ def test_linux_discovers_the_rti_launcher(monkeypatch, tmp_path) -> None:
     assert pitch_cli._discover_installed_runtime_launcher("prti1516e") == launcher
 
 
+def test_linux_crc_command_uses_staged_java_home(monkeypatch, tmp_path) -> None:
+    install_root = tmp_path / "prti1516e"
+    launcher = install_root / "bin" / "pRTI1516e-nogui.sh"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(pitch_routes, "is_linux_platform", lambda: True)
+
+    command = pitch_routes.prti_crc_command(launcher, tmp_path / "native-home")
+
+    assert command == [str(launcher), f"-J-Duser.home={tmp_path / 'native-home'}"]
+
+
 def test_download_submit_dry_run_uses_download_contact(monkeypatch, capsys) -> None:
     monkeypatch.setenv("PITCH_INSTALLER_DROP_ROOT", r"C:\tmp\pitch-installers")
     assert main(["download", "submit", "--email", "you@example.com", "--dry-run"]) == 0

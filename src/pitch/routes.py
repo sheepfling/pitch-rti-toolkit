@@ -878,7 +878,26 @@ def chat_launcher_command(launcher: Path) -> list[str]:
         java_exe = sample_root / "jre" / "bin" / "java.exe"
         if jar_path.exists() and java_exe.exists():
             return [str(java_exe), "-Djava.library.path=" + str(sample_root / "lib"), "-jar", str(jar_path)]
+    if is_linux_platform():
+        sample_root = launcher.parent.parent.parent
+        jar_path = launcher.parent / f"{launcher.stem}.jar"
+        java_exe = sample_root / "jre" / "bin" / "java"
+        if jar_path.exists() and java_exe.exists():
+            return [
+                str(java_exe),
+                f"-Duser.home={native_smoke_home_root()}",
+                "-Djava.library.path=" + str(sample_root / "lib"),
+                "-jar",
+                str(jar_path),
+            ]
     return execution_launcher_command(launcher)
+
+
+def prti_crc_command(launcher: Path, staged_home_root: Path) -> list[str]:
+    """Build a repeatable CRC command without changing the vendor install."""
+    if is_linux_platform():
+        return [str(launcher), f"-J-Duser.home={staged_home_root}"]
+    return _launcher_command(launcher)
 
 
 def run_chat_process(
@@ -1105,6 +1124,16 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
     else:
         port = discovered_prti_crc_port(default=port)
 
+    if staged_settings_path.exists():
+        content = staged_settings_path.read_text(encoding="utf-8", errors="replace")
+        content = re.sub(r"(?m)^CRC\.port=.*$", f"CRC.port={port}", content)
+        staged_settings_path.write_text(content, encoding="utf-8")
+    staged_lrc_settings_path = staged_home_root / "prti1516e" / "prti1516eLRC.settings"
+    if staged_lrc_settings_path.exists():
+        content = staged_lrc_settings_path.read_text(encoding="utf-8", errors="replace")
+        content = re.sub(r"(?m)^crcAddress=.*$", f"crcAddress=localhost\\:{port}", content)
+        staged_lrc_settings_path.write_text(content, encoding="utf-8")
+
     launch_env = os.environ.copy()
     launch_env["PRTI1516E_HOME"] = str(staged_home_root)
     launch_env["USERPROFILE"] = str(staged_home_root)
@@ -1112,7 +1141,7 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
 
     try:
         process = subprocess.Popen(
-            _launcher_command(launcher),
+            prti_crc_command(launcher, staged_home_root),
             cwd=str(launcher.parent),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -1126,6 +1155,7 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
     line_queue: queue.Queue[str] = queue.Queue()
     probe_hosts = ["localhost"]
     reported_host = "localhost"
+    launch_started_ns = time.time_ns()
 
     def _update_probe_hosts(line: str) -> None:
         nonlocal probe_hosts, reported_host
@@ -1145,6 +1175,21 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
             if candidates:
                 reported_host = candidates[0]
                 probe_hosts = candidates + ["localhost"]
+
+    def _log_reports_ready() -> bool:
+        log_root = staged_home_root / "prti1516e" / "logs"
+        for log_path in sorted(log_root.glob("CRC*.log")):
+            try:
+                if log_path.stat().st_mtime_ns < launch_started_ns:
+                    continue
+                content = log_path.read_text(encoding="utf-8", errors="replace")[-65536:]
+            except OSError:
+                continue
+            for line in content.splitlines():
+                if "CRC listening on adapters" in line:
+                    _update_probe_hosts(line)
+                    return True
+        return False
 
     def _drain_stdout() -> None:
         if process.stdout is None:
@@ -1254,6 +1299,8 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
                     for probe_host in probe_hosts:
                         if _wait_for_tcp_port(probe_host, port, timeout_seconds=0.25, interval_seconds=0.1):
                             return process, f"{reported_host}:{port}"
+            if _log_reports_ready():
+                return process, f"{reported_host}:{port}"
             for probe_host in probe_hosts:
                 if _wait_for_tcp_port(probe_host, port, timeout_seconds=0.05, interval_seconds=0.05):
                     return process, f"{reported_host}:{port}"
