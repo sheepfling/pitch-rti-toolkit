@@ -828,6 +828,11 @@ def native_smoke_home_root() -> Path:
             else:
                 shutil.copy2(item, destination)
 
+    source_java_prefs = Path.home() / ".java"
+    staged_java_prefs = staged_home_root / ".java"
+    if source_java_prefs.exists() and not staged_java_prefs.exists():
+        shutil.copytree(source_java_prefs, staged_java_prefs)
+
     crc_port = route_rti_port(route_surface_for_context())
     settings_roots = [staged_prti_root, staged_prti_root / "user.home" / "prti1516e"]
     for settings_root in settings_roots:
