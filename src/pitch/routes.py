@@ -31,6 +31,7 @@ from pitch.common import (
     translate_windows_path,
 )
 from pitch.execution import launcher_command as execution_launcher_command
+from pitch.execution import launcher_command as _launcher_command
 from pitch.execution import docker_compose_run_command, quoted_posix_command, wsl_command
 from pitch.ports import route_rti_port, route_surface_for_context
 from pitch.settings import read_settings_value
@@ -968,37 +969,13 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
     if launcher is None:
         raise RuntimeError("No installed Pitch RTI launcher was found.")
 
-    staged_home_root = native_smoke_home_root()
-    java_exe = launcher.parent.parent / "jre" / "bin" / "java.exe"
-    jar_path = launcher.parent.parent / "lib" / "prtifull.jar"
-    command = [
-        str(java_exe),
-        f"-Dsettings.dir={staged_home_root}",
-        f"-Duser.home={staged_home_root}",
-        "-Xmx512m",
-        "-jar",
-        str(jar_path),
-        "-nogui",
-    ]
-    launch_env = os.environ.copy()
-    launch_env["HOME"] = str(staged_home_root)
-    launch_env["USERPROFILE"] = str(staged_home_root)
-    launch_env["PRTI1516E_HOME"] = str(staged_home_root)
-    launch_env["HOMEDRIVE"] = staged_home_root.drive or launch_env.get("HOMEDRIVE", "")
-    launch_env["HOMEPATH"] = f"\\{staged_home_root.relative_to(staged_home_root.anchor).as_posix().replace('/', '\\')}"
-    port_surface = route_surface_for_context()
-    launch_env["PITCH_PORT"] = str(route_rti_port(port_surface))
-    launch_env["PITCH_PORT_PROFILE"] = port_surface
-    creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0) if is_windows_platform() else 0
     try:
         process = subprocess.Popen(
-            command,
+            _launcher_command(launcher),
             cwd=str(launcher.parent),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            env=launch_env,
-            creationflags=creationflags,
         )
     except OSError as exc:
         raise RuntimeError(f"Could not start the Pitch RTI launcher: {exc}") from exc
@@ -1007,7 +984,7 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
     line_queue: queue.Queue[str] = queue.Queue()
     host = os.environ.get("PITCH_RTI_SMOKE_HOST", "localhost")
     port_surface = route_surface_for_context()
-    port = route_rti_port(port_surface)
+    port = discovered_prti_crc_port(default=route_rti_port(port_surface))
 
     def _drain_stdout() -> None:
         if process.stdout is None:
@@ -1017,7 +994,6 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
             line_queue.put(line)
 
     threading.Thread(target=_drain_stdout, daemon=True).start()
-    _write_console_input(process.pid, "HELP\n")
 
     def _click_license_accept_once() -> bool:
         if not is_windows_platform():
