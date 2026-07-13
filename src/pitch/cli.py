@@ -115,6 +115,7 @@ from pitch.routes import (
     route_summary as _route_summary,
     run_chat_process as _run_chat_process_impl,
     run_chat_smoke_test as _run_chat_smoke_test,
+    terminate_process_tree as _terminate_process_tree,
     _start_prti_crc as _start_prti_crc,
     run_route_command as _run_route_command_impl,
     install_specs_for_system as _install_specs_for_system_impl,
@@ -1937,8 +1938,9 @@ def _run_chat_smoke_test(variant: str = "auto", *, list_only: bool = False) -> i
             try:
                 rti_process.communicate("QUIT\n", timeout=30)
             except subprocess.TimeoutExpired:
-                rti_process.kill()
-                rti_process.communicate()
+                _terminate_process_tree(rti_process)
+            else:
+                _terminate_process_tree(rti_process)
 
 
 def _start_actions() -> list[StartAction]:
@@ -2020,8 +2022,7 @@ def _run_rti_smoke_test() -> int:
         print("Pitch RTI smoke test passed.")
         return 0
     finally:
-        if process.poll() is None:
-            process.kill()
+        _terminate_process_tree(process)
 
 
 def handle_setup(args: argparse.Namespace) -> int:

@@ -915,11 +915,46 @@ def run_chat_process(
         else:
             output, _ = process.communicate(stdin_payload, timeout=90)
     except subprocess.TimeoutExpired:
-        process.kill()
+        terminate_process_tree(process)
         output, _ = process.communicate()
         raise RuntimeError(f"Timed out while running chat sample: {command[0]}") from None
 
     return int(process.returncode or 0), output
+
+
+def terminate_process_tree(process: subprocess.Popen[object], *, timeout_seconds: float = 10.0) -> None:
+    """Stop a launcher and its vendor children, including Java from a .bat file."""
+    terminated = False
+    if is_windows_platform() and process.poll() is None and getattr(process, "pid", None) is not None:
+        try:
+            result = subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=timeout_seconds,
+            )
+            terminated = result.returncode == 0
+        except (OSError, subprocess.TimeoutExpired, TypeError):
+            pass
+
+    if process.poll() is None and not terminated:
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+    wait = getattr(process, "wait", None)
+    if wait is None:
+        return
+    try:
+        wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+            wait(timeout=2.0)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
 
 class KEY_EVENT_RECORD(ctypes.Structure):
@@ -1211,11 +1246,11 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
                 continue
             if line:
                 _update_probe_hosts(line)
-                if (
-                    "Available commands:" in line
-                    or "CRC listening on adapters" in line
-                    or "CRC listening on port" in line
-                ):
+                if "CRC listening on port" in line:
+                    # The vendor's CRC announces readiness before exposing a
+                    # socket that responds to a plain TCP connect probe.
+                    return process, f"{reported_host}:{port}"
+                if "Available commands:" in line or "CRC listening on adapters" in line:
                     for probe_host in probe_hosts:
                         if _wait_for_tcp_port(probe_host, port, timeout_seconds=0.25, interval_seconds=0.1):
                             return process, f"{reported_host}:{port}"
@@ -1223,10 +1258,10 @@ def _start_prti_crc() -> tuple[subprocess.Popen[str], str]:
                 if _wait_for_tcp_port(probe_host, port, timeout_seconds=0.05, interval_seconds=0.05):
                     return process, f"{reported_host}:{port}"
     except Exception:
-        process.kill()
+        terminate_process_tree(process)
         raise
 
-    process.kill()
+    terminate_process_tree(process)
     output = "".join(output_lines)
     raise RuntimeError(f"Pitch RTI did not become ready.\n{output}")
 
@@ -1314,8 +1349,9 @@ def run_chat_smoke_test(variant: str = "auto", *, list_only: bool = False) -> in
             try:
                 rti_process.communicate("QUIT\n", timeout=30)
             except subprocess.TimeoutExpired:
-                rti_process.kill()
-                rti_process.communicate()
+                terminate_process_tree(rti_process)
+            else:
+                terminate_process_tree(rti_process)
 
 
 def start_actions(system: str, asset_root: Path, workspace_root: Path) -> list[StartAction]:
